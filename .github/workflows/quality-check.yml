@@ -1,0 +1,194 @@
+name: QualityGate quality check
+
+on:
+  workflow_call:
+    inputs:
+      quality-config:
+        description: Path to the repository's QualityGate configuration file.
+        type: string
+        default: .qualitygate.yml
+      node-version:
+        description: Node.js version for the lint, typecheck, tests, and build modules.
+        type: string
+        default: '24'
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  config:
+    name: config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      debug-logs: ${{ steps.plan.outputs.debug-logs }}
+      secrets: ${{ steps.plan.outputs.secrets }}
+      lint: ${{ steps.plan.outputs.lint }}
+      typecheck: ${{ steps.plan.outputs.typecheck }}
+      tests: ${{ steps.plan.outputs.tests }}
+      build: ${{ steps.plan.outputs.build }}
+      pr-policy: ${{ steps.plan.outputs.pr-policy }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        with:
+          module: config
+          config: ${{ inputs.quality-config }}
+
+  debug-logs:
+    name: debug-logs
+    needs: config
+    if: needs.config.outputs.debug-logs == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        with:
+          module: debug-logs
+          plan: ${{ needs.config.outputs.plan }}
+
+  secrets:
+    name: secrets
+    needs: config
+    if: needs.config.outputs.secrets == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        with:
+          module: secrets
+          plan: ${{ needs.config.outputs.plan }}
+
+  lint:
+    name: lint
+    needs: config
+    if: needs.config.outputs.lint == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+      - run: corepack enable
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        with:
+          module: lint
+          plan: ${{ needs.config.outputs.plan }}
+
+  typecheck:
+    name: typecheck
+    needs: config
+    if: needs.config.outputs.typecheck == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+      - run: corepack enable
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        with:
+          module: typecheck
+          plan: ${{ needs.config.outputs.plan }}
+
+  tests:
+    name: tests
+    needs: config
+    if: needs.config.outputs.tests == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+      - run: corepack enable
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        with:
+          module: tests
+          plan: ${{ needs.config.outputs.plan }}
+
+  build:
+    name: build
+    needs: config
+    if: needs.config.outputs.build == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+      - run: corepack enable
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        with:
+          module: build
+          plan: ${{ needs.config.outputs.plan }}
+
+  pr-policy:
+    name: pr-policy
+    needs: config
+    if: needs.config.outputs.pr-policy == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        with:
+          module: pr-policy
+          plan: ${{ needs.config.outputs.plan }}
+
+  merge-readiness:
+    name: merge-readiness
+    needs:
+      [config, debug-logs, secrets, lint, typecheck, tests, build, pr-policy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    steps:
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        with:
+          module: merge-readiness
+          needs: ${{ toJSON(needs) }}

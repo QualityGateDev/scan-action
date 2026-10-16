@@ -1,0 +1,30 @@
+name: QualityGate Quality Check
+description: One module of the QualityGate pull request quality suite. Use it through the quality-check reusable workflow.
+author: QualityGate
+
+inputs:
+  module:
+    description: The module to run (config, debug-logs, secrets, lint, typecheck, tests, build, pr-policy, or merge-readiness).
+    required: true
+  config:
+    description: Path to the repository's QualityGate configuration file.
+    required: false
+    default: .qualitygate.yml
+  plan:
+    description: The resolved plan written by the config module.
+    required: false
+  needs:
+    description: The needs context of the merge-readiness job, as JSON.
+    required: false
+  github_token:
+    description: Token used to read pull request, review, and check state.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: node24
+  main: dist/index.js
+
+branding:
+  icon: check-circle
+  color: green

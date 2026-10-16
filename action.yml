@@ -1,0 +1,42 @@
+name: QualityGate Accessibility Scan
+description: Run server-authorized web quality checks in pull request CI
+author: QualityGate
+
+inputs:
+  api_key:
+    description: Project-scoped QualityGate API key. Optional for a repository connected through the QualityGate GitHub App when the workflow grants id-token write.
+    required: false
+  url:
+    description: Preview URL to scan
+    required: true
+  bundle:
+    description: Check bundle (a11y, ada, seo, security, links, full, perf, geo, seo-deep, or secrets-exposure). perf runs Lighthouse and installs it on first use; geo and seo-deep are analysed by the QualityGate service on paid plans.
+    required: false
+    default: a11y
+  fail_on:
+    description: >-
+      Gate thresholds. 'critical=N,serious=N' gates on every finding on the
+      page; 'regression' gates only on findings this pull request introduced,
+      and 'regression,critical=N' allows N of them.
+    required: false
+    default: critical=0,serious=0
+  wait_for_url:
+    description: Wait for the preview URL to return a successful response
+    required: false
+    default: 'true'
+  wait_timeout:
+    description: Maximum preview readiness wait in seconds
+    required: false
+    default: '120'
+  comment:
+    description: Create or update the QualityGate pull request comment
+    required: false
+    default: 'true'
+
+runs:
+  using: node24
+  main: dist/index.js
+
+branding:
+  icon: shield
+  color: green
