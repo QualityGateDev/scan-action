@@ -39,7 +39,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: plan
-        uses: QualityGateDev/scan-action/quality-check@v1.0.5
+        uses: QualityGateDev/scan-action/quality-check@v1.0.6
         with:
           module: config
           config: ${{ inputs.quality-config }}
@@ -55,7 +55,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         with:
           module: debug-logs
           plan: ${{ needs.config.outputs.plan }}
@@ -71,7 +71,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         with:
           module: secrets
           plan: ${{ needs.config.outputs.plan }}
@@ -92,7 +92,7 @@ jobs:
       - run: corepack enable
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
         with:
@@ -115,7 +115,7 @@ jobs:
       - run: corepack enable
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
         with:
@@ -138,7 +138,7 @@ jobs:
       - run: corepack enable
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
         with:
@@ -161,7 +161,7 @@ jobs:
       - run: corepack enable
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
         with:
@@ -175,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         with:
           module: pr-policy
           plan: ${{ needs.config.outputs.plan }}
@@ -188,7 +188,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 130
     steps:
-      - uses: QualityGateDev/scan-action/quality-check@v1.0.5
+      - uses: QualityGateDev/scan-action/quality-check@v1.0.6
         with:
           module: merge-readiness
           needs: ${{ toJSON(needs) }}

@@ -20,6 +20,18 @@ inputs:
       and 'regression,critical=N' allows N of them.
     required: false
     default: critical=0,serious=0
+  preview_username:
+    description: Username for a preview protected by HTTP basic auth. Pass it from a secret. Sent only to the preview URL's origin.
+    required: false
+  preview_password:
+    description: Password for a preview protected by HTTP basic auth. Pass it from a secret. Sent only to the preview URL's origin.
+    required: false
+  preview_headers:
+    description: >-
+      Extra request headers for a protected preview, one 'Name: value' per
+      line, such as a deployment protection bypass token. Pass values from
+      secrets. Sent only to the preview URL's origin.
+    required: false
   wait_for_url:
     description: Wait for the preview URL to return a successful response
     required: false

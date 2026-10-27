@@ -13085,7 +13085,7 @@ function _coercedNumber(Class, params) {
         type: "number",
         coerce: true,
         checks: [],
-        ...util.normalizeParams(params),
+        ...normalizeParams(params),
     });
 }
 // @__NO_SIDE_EFFECTS__
@@ -17784,6 +17784,75 @@ const PACKAGE_CATALOG = {
         customReportDomain: true,
     },
 };
+const BUNDLE_DETAILS = {
+    a11y: {
+        name: 'Accessibility',
+        summary: "axe-core's default rules: missing alt text, contrast, labels and landmarks.",
+        coverage: 'Checks the loaded page for image alternatives, text contrast, form labels, landmarks and other axe-core rules.',
+        gate: 'Critical or serious accessibility findings.',
+        note: 'Automated checks cannot prove that a page is fully accessible.',
+    },
+    ada: {
+        name: 'WCAG A/AA',
+        summary: 'The same engine limited to WCAG 2.0, 2.1 and 2.2 level A and AA.',
+        coverage: 'Runs axe-core rules mapped to WCAG 2.0, 2.1 and 2.2 levels A and AA on the loaded page.',
+        gate: 'Critical or serious findings from those WCAG rules.',
+        note: 'This automated scan is not a legal or conformance assessment.',
+    },
+    seo: {
+        name: 'On-page SEO',
+        summary: 'Title, meta description, canonical, h1, viewport, robots and Open Graph tags.',
+        coverage: 'Reads the page title, meta description, canonical URL, h1, viewport, robots directives and Open Graph tags.',
+        gate: 'Serious issues such as a missing title, h1 or viewport. A noindex directive is reported only.',
+    },
+    security: {
+        name: 'Security headers',
+        summary: 'CSP, framing protection, nosniff, HSTS, Referrer-Policy and Permissions-Policy.',
+        coverage: 'Checks the final response for CSP, framing protection, nosniff, HSTS, Referrer-Policy and Permissions-Policy headers.',
+        gate: 'Plain HTTP, missing nosniff or missing framing protection. Missing CSP or HSTS is reported only.',
+    },
+    links: {
+        name: 'Broken links',
+        summary: 'Requests up to 100 links on the page and flags your own broken ones.',
+        coverage: 'Requests up to 100 distinct links on this page; it does not crawl linked pages.',
+        gate: 'Broken links to your own site. Broken external links are reported only.',
+    },
+    full: {
+        name: 'Full page check',
+        summary: 'a11y, seo, security and links in one page load, for one run.',
+        coverage: 'Combines accessibility, on-page SEO, security headers and broken links in one page load.',
+        gate: 'Critical or serious findings from any of those four checks.',
+        note: 'One run. Performance, AI search, site crawl and exposed secrets are separate bundles.',
+    },
+    perf: {
+        name: 'Performance',
+        summary: 'Lighthouse on simulated mobile, median of three loads. Adds 15 to 30 seconds.',
+        coverage: 'Runs Lighthouse three times with simulated mobile conditions and uses the median result.',
+        gate: 'A core Lighthouse metric in the poor range. Metrics needing improvement are reported only.',
+        note: 'Usually adds 15–30 seconds and is not included in Full page check.',
+    },
+    geo: {
+        name: 'AI search readiness',
+        summary: 'llms.txt, AI crawler access in robots.txt, JSON-LD and how quotable the page is.',
+        coverage: 'Checks llms.txt, AI crawler access, JSON-LD structured data and how quotable the page text is.',
+        gate: 'JSON-LD that is not valid JSON. Blocked AI crawlers are reported only.',
+        note: 'Readiness checks do not guarantee AI citations or rankings.',
+    },
+    'seo-deep': {
+        name: 'Site SEO crawl',
+        summary: 'Crawls up to 25 pages: broken internal links, canonicals, hreflang and orphans.',
+        coverage: 'Crawls up to 25 same-origin pages, checking internal links, canonicals, hreflang, JSON-LD, duplicate titles and orphan pages.',
+        gate: 'Internal links to error pages, broken canonicals or invalid JSON-LD.',
+        note: 'The crawl goes at most three clicks deep and reports when it reaches a limit.',
+    },
+    'secrets-exposure': {
+        name: 'Exposed secrets',
+        summary: 'Server-side credentials that reach the browser.',
+        coverage: 'Inspects the page and up to 40 same-origin scripts or JSON files for server-side credentials exposed to browsers.',
+        gate: 'Any exposed server-side credential. Public browser keys are excluded.',
+        note: 'Rotate a credential if it has already been exposed.',
+    },
+};
 const BUNDLE_GROUPS = [
     {
         id: 'accessibility',
@@ -18476,6 +18545,7 @@ const ProjectSummarySchema = object({
 })
     .strict();
 const ProjectListSchema = object({
+    bundles: array(BundleIdSchema).optional(),
     limit: object({
         maximum: schemas_number().int().positive().nullable(),
         used: schemas_number().int().nonnegative(),
@@ -18498,6 +18568,12 @@ const PROJECT_ERROR_CODES = [
     'RESOURCE_NOT_FOUND',
     'REPOSITORY_ALREADY_CLAIMED',
     'PROJECT_LIMIT_REACHED',
+    'TARGET_NOT_PUBLIC',
+    'DOMAIN_NOT_ALLOWED',
+    'DNS_FAILED',
+    'PLAN_INACTIVE',
+    'BUNDLE_NOT_ALLOWED',
+    'QUOTA_EXCEEDED',
 ];
 const ProjectErrorCodeSchema = schemas_enum(PROJECT_ERROR_CODES);
 //# sourceMappingURL=projects.js.map
@@ -18967,7 +19043,594 @@ const UpdateProjectNotificationSettingsSchema = object({
 })
     .strict();
 //# sourceMappingURL=notifications.js.map
+;// CONCATENATED MODULE: ../shared/dist/seo-audit.js
+
+const SEO_AUDIT_STATUSES = [
+    'queued',
+    'discovering',
+    'crawling',
+    'analyzing',
+    'pause_requested',
+    'paused',
+    'cancel_requested',
+    'completed',
+    'cancelled',
+    'failed',
+    'expired',
+];
+const SeoAuditStatusSchema = schemas_enum(SEO_AUDIT_STATUSES);
+const SEO_AUDIT_ACTIVE_STATUSES = (/* unused pure expression or super */ null && ([
+    'queued',
+    'discovering',
+    'crawling',
+    'analyzing',
+    'pause_requested',
+    'paused',
+    'cancel_requested',
+]));
+const SEO_AUDIT_TERMINAL_STATUSES = (/* unused pure expression or super */ null && ([
+    'completed',
+    'cancelled',
+    'failed',
+    'expired',
+]));
+function isTerminalSeoAuditStatus(status) {
+    return SEO_AUDIT_TERMINAL_STATUSES.includes(status);
+}
+const SeoAuditSeveritySchema = schemas_enum([
+    'critical',
+    'high',
+    'medium',
+    'low',
+    'informational',
+]);
+const SEO_AUDIT_SEVERITIES = SeoAuditSeveritySchema.options;
+const SeoRuleOutcomeSchema = schemas_enum([
+    'pass',
+    'fail',
+    'not_applicable',
+    'unknown',
+]);
+const SeoCoverageSchema = schemas_enum(['complete', 'limited']);
+const SEO_LIMIT_REASONS = [
+    'page_budget',
+    'discovery_cap',
+    'depth_limit',
+    'robots_unavailable',
+    'sitemap_limit',
+    'link_cap',
+    'fetch_failures',
+    'duration_limit',
+    'access_revoked',
+    'cancelled',
+];
+const SeoLimitReasonSchema = schemas_enum(SEO_LIMIT_REASONS);
+const SeoAuditCountersSchema = object({
+    admitted: schemas_number().int().nonnegative(),
+    discovered: schemas_number().int().nonnegative(),
+    excluded: schemas_number().int().nonnegative(),
+    failed: schemas_number().int().nonnegative(),
+    fetched: schemas_number().int().nonnegative(),
+    htmlAnalyzed: schemas_number().int().nonnegative(),
+    pending: schemas_number().int().nonnegative(),
+    robotsBlocked: schemas_number().int().nonnegative(),
+    truncated: schemas_number().int().nonnegative(),
+})
+    .strict();
+const SeoAuditProgressSchema = object({
+    activeMs: schemas_number().int().nonnegative(),
+    auditId: schemas_string().uuid(),
+    counters: SeoAuditCountersSchema,
+    coverage: SeoCoverageSchema.nullable(),
+    createdAt: schemas_string().datetime(),
+    errorKind: schemas_string().max(80).nullable(),
+    finishedAt: schemas_string().datetime().nullable(),
+    heartbeatAt: schemas_string().datetime().nullable(),
+    limitReasons: array(SeoLimitReasonSchema),
+    pageBudget: schemas_number().int().positive(),
+    startedAt: schemas_string().datetime().nullable(),
+    stateVersion: schemas_number().int().nonnegative(),
+    status: SeoAuditStatusSchema,
+    version: schemas_number().int().nonnegative(),
+})
+    .strict();
+const SeoHealthSummarySchema = object({
+    evaluatedPages: schemas_number().int().nonnegative(),
+    issues: object({
+        critical: schemas_number().int().nonnegative(),
+        high: schemas_number().int().nonnegative(),
+        informational: schemas_number().int().nonnegative(),
+        low: schemas_number().int().nonnegative(),
+        medium: schemas_number().int().nonnegative(),
+    })
+        .strict(),
+    indexability: object({
+        indexable: schemas_number().int().nonnegative(),
+        nonIndexable: schemas_number().int().nonnegative(),
+        unknown: schemas_number().int().nonnegative(),
+    })
+        .strict(),
+    score: schemas_number().int().min(0).max(100).nullable(),
+    scoreVersion: schemas_string(),
+    unscoredPages: schemas_number().int().nonnegative(),
+    unweightedScore: schemas_number().int().min(0).max(100).nullable(),
+})
+    .strict();
+const SeoAuditSummarySchema = SeoAuditProgressSchema.extend({
+    health: SeoHealthSummarySchema.nullable(),
+    startUrl: schemas_string().url(),
+}).strict();
+const SeoAuditListSchema = object({
+    items: array(SeoAuditSummarySchema),
+    nextCursor: schemas_string().nullable(),
+})
+    .strict();
+const StartSeoAuditRequestSchema = object({ idempotencyKey: schemas_string().uuid() })
+    .strict();
+const StartSeoAuditResponseSchema = object({
+    auditId: schemas_string().uuid(),
+    progressUrl: schemas_string(),
+    status: literal('queued'),
+})
+    .strict();
+const SeoAuditTransitionRequestSchema = object({ expectedVersion: schemas_number().int().nonnegative() })
+    .strict();
+//# sourceMappingURL=seo-audit.js.map
+;// CONCATENATED MODULE: ../shared/dist/seo-audit-config.js
+
+const SEO_AUDIT_VERSIONS = {
+    extractor: 'extract-v1',
+    normalization: 'url-v1',
+    rules: 'rules-v1',
+    score: 'seo-health-v1',
+};
+const SEO_AUDIT_LIMITS = {
+    defaultPages: 1_000,
+    maxAdditionalOrigins: 10,
+    maxDepth: 100,
+    maxDiscoveredUrls: 100_000,
+    maxLinksPerPage: 5_000,
+    maxPages: 10_000,
+    maxPatterns: 20,
+    maxSitemapUrls: 10,
+};
+const PatternSchema = schemas_string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine((value) => (value.match(/\*/g)?.length ?? 0) <= 10, {
+    message: 'A pattern may contain at most 10 wildcards.',
+});
+const PatternListSchema = array(PatternSchema)
+    .max(SEO_AUDIT_LIMITS.maxPatterns)
+    .default([]);
+const seo_audit_config_HttpUrlSchema = schemas_string()
+    .trim()
+    .max(2_048)
+    .refine((value) => {
+    try {
+        const url = new URL(value);
+        return ((url.protocol === 'https:' || url.protocol === 'http:') &&
+            !url.username &&
+            !url.password);
+    }
+    catch {
+        return false;
+    }
+}, 'Enter a public http or https URL without credentials.');
+const OriginSchema = seo_audit_config_HttpUrlSchema.transform((value) => new URL(value).origin);
+const SeoDiscoveryModeSchema = schemas_enum([
+    'links_and_sitemaps',
+    'sitemaps_only',
+]);
+const SeoGuidanceThresholdsSchema = object({
+    descriptionMax: schemas_number().int().min(50).max(400).default(160),
+    descriptionMin: schemas_number().int().min(0).max(200).default(50),
+    thinContentWords: schemas_number().int().min(0).max(2_000).default(150),
+    titleMax: schemas_number().int().min(20).max(200).default(60),
+    titleMin: schemas_number().int().min(0).max(60).default(10),
+})
+    .strict();
+const SeoAuditSettingsSchema = object({
+    additionalOrigins: array(OriginSchema)
+        .max(SEO_AUDIT_LIMITS.maxAdditionalOrigins)
+        .default([]),
+    discovery: SeoDiscoveryModeSchema.default('links_and_sitemaps'),
+    exclude: PatternListSchema,
+    excludedParameters: array(schemas_string().trim().min(1).max(100))
+        .max(50)
+        .default([]),
+    expectedNoindex: PatternListSchema,
+    hostConcurrency: schemas_number().int().min(1).max(4).default(2),
+    important: PatternListSchema,
+    include: PatternListSchema,
+    maxDepth: schemas_number()
+        .int()
+        .min(0)
+        .max(SEO_AUDIT_LIMITS.maxDepth)
+        .default(10),
+    maxPages: schemas_number()
+        .int()
+        .min(1)
+        .max(SEO_AUDIT_LIMITS.maxPages)
+        .default(SEO_AUDIT_LIMITS.defaultPages),
+    primary: PatternListSchema,
+    requestsPerSecond: schemas_number().min(0.1).max(2).default(1),
+    sitemapUrls: array(seo_audit_config_HttpUrlSchema)
+        .max(SEO_AUDIT_LIMITS.maxSitemapUrls)
+        .default([]),
+    thresholds: SeoGuidanceThresholdsSchema.default(SeoGuidanceThresholdsSchema.parse({})),
+})
+    .strict();
+const SeoAuditConfigSchema = SeoAuditSettingsSchema.extend({
+    startUrl: seo_audit_config_HttpUrlSchema,
+    versions: object({
+        extractor: schemas_string().min(1).max(40),
+        normalization: schemas_string().min(1).max(40),
+        rules: schemas_string().min(1).max(40),
+        score: schemas_string().min(1).max(40),
+    })
+        .strict(),
+}).strict();
+const SeoWebsiteSchema = object({
+    baseUrl: schemas_string().url(),
+    configVersion: schemas_number().int().positive(),
+    generation: schemas_number().int().positive(),
+    id: schemas_string().uuid(),
+    settings: SeoAuditSettingsSchema,
+    updatedAt: schemas_string().datetime(),
+})
+    .strict();
+const SeoWebsiteResponseSchema = object({
+    allowedDomains: array(schemas_string()),
+    limits: object({ maxPages: schemas_number().int().positive() }).strict(),
+    website: SeoWebsiteSchema.nullable(),
+})
+    .strict();
+const UpdateSeoWebsiteRequestSchema = object({
+    baseUrl: seo_audit_config_HttpUrlSchema,
+    expectedVersion: schemas_number().int().nonnegative(),
+    settings: SeoAuditSettingsSchema.default(SeoAuditSettingsSchema.parse({})),
+})
+    .strict();
+//# sourceMappingURL=seo-audit-config.js.map
+;// CONCATENATED MODULE: ../shared/dist/seo-audit-errors.js
+
+const SEO_AUDIT_ERROR_CODES = [
+    'SEO_AUDITS_UNAVAILABLE',
+    'SEO_WEBSITE_REQUIRED',
+    'SEO_AUDIT_ACTIVE',
+    'SEO_BUDGET_EXHAUSTED',
+    'SEO_CONFIG_CONFLICT',
+    'SEO_TARGET_PROHIBITED',
+    'SEO_IDEMPOTENCY_CONFLICT',
+    'SEO_TRANSITION_INVALID',
+    'SEO_SNAPSHOT_UNAVAILABLE',
+];
+const SeoAuditErrorCodeSchema = schemas_enum(SEO_AUDIT_ERROR_CODES);
+//# sourceMappingURL=seo-audit-errors.js.map
+;// CONCATENATED MODULE: ../../node_modules/.pnpm/zod@4.4.3/node_modules/zod/v4/classic/coerce.js
+
+
+function coerce_string(params) {
+    return core._coercedString(schemas.ZodString, params);
+}
+function coerce_number(params) {
+    return _coercedNumber(ZodNumber, params);
+}
+function coerce_boolean(params) {
+    return core._coercedBoolean(schemas.ZodBoolean, params);
+}
+function coerce_bigint(params) {
+    return core._coercedBigint(schemas.ZodBigInt, params);
+}
+function coerce_date(params) {
+    return core._coercedDate(schemas.ZodDate, params);
+}
+
+;// CONCATENATED MODULE: ../shared/dist/seo-audit-report.js
+
+
+const SEO_PAGE_SIZE_DEFAULT = 50;
+const SEO_PAGE_SIZE_MAX = 100;
+const SEO_CRAWL_STATUSES = [
+    'discovered',
+    'queued',
+    'fetched',
+    'failed',
+    'robots_blocked',
+    'excluded',
+    'skipped',
+];
+const SeoCrawlStatusSchema = schemas_enum(SEO_CRAWL_STATUSES);
+const SEO_INDEXABILITY = [
+    'indexable',
+    'noindex',
+    'blocked_by_status',
+    'canonicalized',
+    'unknown',
+];
+const SeoIndexabilitySchema = schemas_enum(SEO_INDEXABILITY);
+const SEO_SOURCE_KINDS = [
+    'seed',
+    'link',
+    'sitemap',
+    'redirect',
+    'canonical',
+    'hreflang',
+];
+const SeoSourceKindSchema = schemas_enum(SEO_SOURCE_KINDS);
+const SEO_ISSUE_CATEGORIES = [
+    'requests',
+    'indexability',
+    'canonicals',
+    'metadata',
+    'headings',
+    'images',
+    'content',
+    'structured_data',
+    'links',
+    'internationalization',
+    'sitemaps',
+];
+const SeoIssueCategorySchema = schemas_enum(SEO_ISSUE_CATEGORIES);
+const SeoIssueCountsSchema = object({
+    critical: schemas_number().int().nonnegative(),
+    high: schemas_number().int().nonnegative(),
+    informational: schemas_number().int().nonnegative(),
+    low: schemas_number().int().nonnegative(),
+    medium: schemas_number().int().nonnegative(),
+})
+    .strict();
+const SeoPageSummarySchema = object({
+    canonical: schemas_string().nullable(),
+    crawlStatus: SeoCrawlStatusSchema,
+    depth: schemas_number().int().nonnegative().nullable(),
+    fetchedAt: schemas_string().datetime().nullable(),
+    httpStatus: schemas_number().int().nullable(),
+    incomingLinks: schemas_number().int().nonnegative(),
+    indexability: SeoIndexabilitySchema,
+    inSitemap: schemas_boolean(),
+    issues: SeoIssueCountsSchema,
+    pageId: schemas_string().uuid(),
+    score: schemas_number().int().min(0).max(100).nullable(),
+    skipReason: schemas_string().max(80).nullable(),
+    title: schemas_string().nullable(),
+    url: schemas_string(),
+})
+    .strict();
+const SeoPageListSchema = object({
+    items: array(SeoPageSummarySchema),
+    nextCursor: schemas_string().nullable(),
+    total: schemas_number().int().nonnegative(),
+})
+    .strict();
+const SEO_PAGE_SORTS = [
+    'url',
+    'status',
+    'score',
+    'issues',
+    'depth',
+    'incoming',
+];
+const SeoPageSortSchema = schemas_enum(SEO_PAGE_SORTS);
+const SeoPageQuerySchema = object({
+    crawlStatus: SeoCrawlStatusSchema.optional(),
+    cursor: schemas_string().max(500).optional(),
+    direction: schemas_enum(['asc', 'desc']).default('asc'),
+    indexability: SeoIndexabilitySchema.optional(),
+    inSitemap: schemas_enum(['true', 'false']).optional(),
+    limit: coerce_number()
+        .int()
+        .min(1)
+        .max(SEO_PAGE_SIZE_MAX)
+        .default(SEO_PAGE_SIZE_DEFAULT),
+    q: schemas_string().trim().max(200).optional(),
+    ruleId: schemas_string().max(80).optional(),
+    severity: SeoAuditSeveritySchema.optional(),
+    sort: SeoPageSortSchema.default('url'),
+    statusFamily: schemas_enum(['2xx', '3xx', '4xx', '5xx', 'none']).optional(),
+})
+    .strict();
+const SeoEvidenceSchema = record(schemas_string().max(60), union([
+    schemas_string().max(600),
+    schemas_number(),
+    schemas_boolean(),
+    schemas_null(),
+    array(union([schemas_string().max(600), schemas_number()])).max(20),
+]));
+const SeoIssueOccurrenceSchema = object({
+    confidence: schemas_enum(['high', 'medium', 'low']),
+    evidence: SeoEvidenceSchema,
+    occurrenceId: schemas_string().uuid(),
+    pageId: schemas_string().uuid().nullable(),
+    ruleId: schemas_string(),
+    severity: SeoAuditSeveritySchema,
+    url: schemas_string().nullable(),
+})
+    .strict();
+const SeoRuleInfoSchema = object({
+    action: schemas_string(),
+    category: SeoIssueCategorySchema,
+    explanation: schemas_string(),
+    id: schemas_string(),
+    title: schemas_string(),
+    whyItMatters: schemas_string(),
+})
+    .strict();
+const SeoDispositionSchema = schemas_enum(['open', 'acknowledged', 'ignored']);
+const SeoIssueGroupSchema = object({
+    affectedPages: schemas_number().int().nonnegative(),
+    occurrences: schemas_number().int().nonnegative(),
+    rule: SeoRuleInfoSchema,
+    severity: SeoAuditSeveritySchema,
+})
+    .strict();
+const SeoIssueGroupListSchema = object({ items: array(SeoIssueGroupSchema) })
+    .strict();
+const SeoIssueGroupDetailSchema = object({
+    group: SeoIssueGroupSchema,
+    items: array(SeoIssueOccurrenceSchema.extend({
+        disposition: SeoDispositionSchema,
+        issueId: schemas_string().uuid(),
+        recurrence: schemas_enum(['new', 'recurring']),
+    }).strict()),
+    nextCursor: schemas_string().nullable(),
+})
+    .strict();
+const SeoIssueQuerySchema = object({
+    category: SeoIssueCategorySchema.optional(),
+    severity: SeoAuditSeveritySchema.optional(),
+})
+    .strict();
+const SeoIssueGroupQuerySchema = object({
+    cursor: schemas_string().max(500).optional(),
+    disposition: SeoDispositionSchema.optional(),
+})
+    .strict();
+const SeoLinkSummarySchema = object({
+    anchor: schemas_string().max(200).nullable(),
+    nofollow: schemas_boolean(),
+    occurrences: schemas_number().int().positive(),
+    pageId: schemas_string().uuid().nullable(),
+    status: schemas_number().int().nullable(),
+    url: schemas_string(),
+})
+    .strict();
+const SeoPageObservationSchema = object({
+    bytes: schemas_number().int().nonnegative().nullable(),
+    contentType: schemas_string().nullable(),
+    fetchedAt: schemas_string().datetime(),
+    headers: record(schemas_string(), schemas_string().max(600)),
+    redirectTo: schemas_string().nullable(),
+    requestedUrl: schemas_string(),
+    status: schemas_number().int().nullable(),
+    timingMs: schemas_number().int().nonnegative().nullable(),
+    transportError: schemas_string().nullable(),
+    truncated: schemas_boolean(),
+})
+    .strict();
+const SeoPageSignalsViewSchema = object({
+    canonicals: array(schemas_string()).max(20),
+    description: schemas_string().nullable(),
+    headings: array(object({ level: schemas_number().int(), text: schemas_string() }).strict())
+        .max(50),
+    hreflang: array(object({ href: schemas_string(), lang: schemas_string() }).strict())
+        .max(50),
+    imagesMissingAlt: schemas_number().int().nonnegative(),
+    images: schemas_number().int().nonnegative(),
+    language: schemas_string().nullable(),
+    robots: array(schemas_string()).max(20),
+    schemaTypes: array(schemas_string()).max(50),
+    title: schemas_string().nullable(),
+    wordCount: schemas_number().int().nonnegative(),
+})
+    .strict();
+const SeoPageDetailSchema = object({
+    incoming: array(SeoLinkSummarySchema),
+    issues: array(SeoIssueOccurrenceSchema.extend({ rule: SeoRuleInfoSchema }).strict()),
+    observation: SeoPageObservationSchema.nullable(),
+    outgoing: array(SeoLinkSummarySchema),
+    outcomes: record(schemas_string(), SeoRuleOutcomeSchema),
+    signals: SeoPageSignalsViewSchema.nullable(),
+    sources: array(SeoSourceKindSchema),
+    summary: SeoPageSummarySchema,
+})
+    .strict();
+const SeoAuditOverviewSchema = object({
+    audit: SeoAuditSummarySchema,
+    statusFamilies: object({
+        '2xx': schemas_number().int().nonnegative(),
+        '3xx': schemas_number().int().nonnegative(),
+        '4xx': schemas_number().int().nonnegative(),
+        '5xx': schemas_number().int().nonnegative(),
+        none: schemas_number().int().nonnegative(),
+    })
+        .strict(),
+    topIssues: array(SeoIssueGroupSchema).max(10),
+})
+    .strict();
+const SeoIssueDispositionRequestSchema = object({
+    disposition: SeoDispositionSchema,
+    expectedVersion: schemas_number().int().nonnegative(),
+    reason: schemas_string().trim().max(500).default(''),
+})
+    .strict();
+const SeoIssueEventSchema = object({
+    actor: schemas_string().nullable(),
+    at: schemas_string().datetime(),
+    from: SeoDispositionSchema,
+    reason: schemas_string(),
+    to: SeoDispositionSchema,
+})
+    .strict();
+const SeoIssueDetailSchema = object({
+    disposition: SeoDispositionSchema,
+    dispositionAt: schemas_string().datetime().nullable(),
+    dispositionReason: schemas_string().nullable(),
+    firstSeenAuditId: schemas_string().uuid(),
+    history: array(SeoIssueEventSchema).max(50),
+    issueId: schemas_string().uuid(),
+    lastSeenAuditId: schemas_string().uuid(),
+    rule: SeoRuleInfoSchema,
+    version: schemas_number().int().nonnegative(),
+})
+    .strict();
+const SEO_EXPORT_SELECTION_MAX = 500;
+const SeoExportQuerySchema = SeoPageQuerySchema.pick({
+    crawlStatus: true,
+    indexability: true,
+    inSitemap: true,
+    q: true,
+    ruleId: true,
+    severity: true,
+    statusFamily: true,
+})
+    .extend({
+    format: schemas_enum(['csv', 'json']).default('csv'),
+    pageIds: schemas_string()
+        .max(SEO_EXPORT_SELECTION_MAX * 37)
+        .transform((value) => value.split(',').filter(Boolean))
+        .pipe(array(schemas_string().uuid()).min(1).max(SEO_EXPORT_SELECTION_MAX))
+        .optional(),
+})
+    .strict();
+const SEO_SAVED_FILTER_VERSION = 1;
+const SEO_SAVED_FILTER_MAX = 50;
+const SeoSavedFilterQuerySchema = SeoPageQuerySchema.pick({
+    crawlStatus: true,
+    direction: true,
+    indexability: true,
+    inSitemap: true,
+    q: true,
+    ruleId: true,
+    severity: true,
+    sort: true,
+    statusFamily: true,
+})
+    .partial()
+    .strict();
+const SeoSavedFilterSchema = object({
+    createdAt: schemas_string().datetime(),
+    id: schemas_string().uuid(),
+    name: schemas_string(),
+    query: SeoSavedFilterQuerySchema.nullable(),
+    stale: schemas_boolean(),
+})
+    .strict();
+const SeoSavedFilterListSchema = object({ items: array(SeoSavedFilterSchema) })
+    .strict();
+const CreateSeoSavedFilterRequestSchema = object({
+    name: schemas_string().trim().min(1).max(80),
+    query: SeoSavedFilterQuerySchema,
+})
+    .strict();
+//# sourceMappingURL=seo-audit-report.js.map
 ;// CONCATENATED MODULE: ../shared/dist/index.js
+
+
+
+
 
 
 
