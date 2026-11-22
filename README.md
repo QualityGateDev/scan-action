@@ -63,6 +63,10 @@ so the action can post its comment.
 | `wait_timeout` | `120`                  | Seconds to wait for the URL.                                                                         |
 | `comment`      | `true`                 | Create or update the QualityGate pull request comment.                                               |
 
+The step's output `report_path` names a JSON file with the verdict and every
+finding. The comment lists up to 50 findings, the job summary up to 500, and
+the step's log all of them.
+
 ## Guides
 
 | Topic                                                                               | What it covers                                                          |

@@ -44,6 +44,14 @@ inputs:
     description: Create or update the QualityGate pull request comment
     required: false
     default: 'true'
+  repository_security:
+    description: Opt in to the pilot passive repository dependency scan. Requires a project API key, id-token write permission, and an approved sca_passive profile.
+    required: false
+    default: 'false'
+
+outputs:
+  report_path:
+    description: Path of a JSON file with the verdict and every finding, for scripts or `actions/upload-artifact`.
 
 runs:
   using: node24

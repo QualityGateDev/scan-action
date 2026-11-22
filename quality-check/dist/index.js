@@ -17082,6 +17082,7 @@ const AUTH_ERROR_CODES = [
     'HOSTNAME_TAKEN',
     'HOSTNAME_RESERVED',
     'ACCOUNT_DELETION_BLOCKED',
+    'ORGANIZATION_SLUG_TAKEN',
 ];
 const AuthErrorCodeSchema = schemas_enum(AUTH_ERROR_CODES);
 const AuthErrorResponseSchema = object({
@@ -17136,13 +17137,27 @@ const UserSummarySchema = object({
     identities: array(AuthProviderSchema).min(1),
 })
     .strict();
+const ORGANIZATION_SLUG_MAX_LENGTH = 63;
+const OrganizationSlugSchema = schemas_string()
+    .min(1, 'Enter an organization slug.')
+    .max(ORGANIZATION_SLUG_MAX_LENGTH, 'Use at most 63 characters for the slug.')
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Use lowercase letters and numbers, separated by single hyphens.');
+const DeleteOrganizationRequestSchema = object({ confirmSlug: OrganizationSlugSchema })
+    .strict();
+function generateOrganizationSlug(name) {
+    return (name
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 55)
+        .replace(/-$/g, '') || 'organization');
+}
 const OrganizationSummarySchema = object({
     id: schemas_string().uuid(),
     name: schemas_string().trim().min(1).max(120),
-    slug: schemas_string()
-        .min(2)
-        .max(63)
-        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    slug: OrganizationSlugSchema,
     role: MembershipRoleSchema,
 })
     .strict();
@@ -17206,6 +17221,11 @@ const ProfileUpdateRequestSchema = object({ displayName: DisplayNameSchema })
     .strict();
 const CreateOrganizationRequestSchema = object({ name: schemas_string().trim().min(1).max(120) })
     .strict();
+const RenameOrganizationRequestSchema = CreateOrganizationRequestSchema.extend({
+    slug: schemas_string().trim().pipe(OrganizationSlugSchema),
+})
+    .partial()
+    .refine(({ name, slug }) => name !== undefined || slug !== undefined);
 const ActiveOrganizationRequestSchema = object({ organizationId: schemas_string().uuid() })
     .strict();
 const AcceptedResponseSchema = object({ status: literal('accepted') })
@@ -17784,7 +17804,7 @@ const PACKAGE_CATALOG = {
         customReportDomain: true,
     },
 };
-const BUNDLE_DETAILS = {
+const product_catalog_BUNDLE_DETAILS = {
     a11y: {
         name: 'Accessibility',
         summary: "axe-core's default rules: missing alt text, contrast, labels and landmarks.",
@@ -18549,9 +18569,15 @@ const ProjectListSchema = object({
     limit: object({
         maximum: schemas_number().int().positive().nullable(),
         used: schemas_number().int().nonnegative(),
+        reserved: schemas_number().int().nonnegative().optional(),
+        nextReleaseAt: schemas_string().datetime().nullable().optional(),
     })
         .strict(),
     projects: array(ProjectSummarySchema),
+})
+    .strict();
+const DeleteProjectResponseSchema = object({
+    slotReservedUntil: schemas_string().datetime(),
 })
     .strict();
 const CreateApiKeyRequestSchema = object({ name: schemas_string().trim().min(1).max(120) })
@@ -19653,8 +19679,10 @@ const CreateSeoSavedFilterRequestSchema = object({
 
 
 
+
 //# sourceMappingURL=index.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/html-report.js
+
 
 const HTML_REPORT_DEFAULT_THEME = {
     brandName: 'QualityGate',
@@ -19753,6 +19781,17 @@ function pdfSummaryResults(bundle, results) {
 function metadataItem(label, value) {
     return `<div><dt>${label}</dt><dd>${escapeText(value)}</dd></div>`;
 }
+function reportTime(value) {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp))
+        return metadataItem('Run time', value);
+    const displayTime = new Intl.DateTimeFormat('en-GB', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'UTC',
+    }).format(timestamp);
+    return `<div><dt>Run time</dt><dd><time datetime="${escapeAttribute(value)}">${escapeText(displayTime)} UTC</time></dd></div>`;
+}
 function findingHtml(result, analysis) {
     const groups = SEVERITIES.flatMap((severity) => {
         const issues = result.issues.filter((issue) => issue.severity === severity);
@@ -19814,8 +19853,41 @@ function brandHtml(theme, whiteLabel) {
         : `<img class="brand-logo" src="${escapeAttribute(theme.logoUrl)}" alt="${escapeAttribute(theme.brandName)} logo">`;
     return `${mark}<span>${escapeText(theme.brandName)}</span>`;
 }
+function renderReportUnavailable() {
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Report not found · QualityGate</title>
+<style>
+* { box-sizing: border-box; }
+html { color-scheme: light; background: #f5f7fb; color: #12243a; font: 1rem/1.6 Inter, ui-sans-serif, system-ui, sans-serif; }
+body { margin: 0; }
+.brand { display: flex; align-items: center; gap: .65rem; font-size: 1.125rem; font-weight: 750; }
+.brand-mark { width: 2rem; flex: none; }
+.brand-mark path { fill: none; stroke-width: 3; stroke-linecap: square; }
+${CLIENT_REPORT_MASTHEAD_STYLES}
+.unavailable { width: min(100% - 2.5rem, 72rem); margin-inline: auto; padding-block: clamp(2rem, 8vw, 6rem); }
+.unavailable h1 { margin: 0; font: 700 clamp(2rem, 5vw, 3.5rem)/1.12 Geist, ui-sans-serif, system-ui, sans-serif; letter-spacing: -.035em; }
+.unavailable p { max-width: 52ch; margin: 1rem 0 0; color: #52647b; }
+.unavailable .next-step { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #d9e1eb; color: #12243a; }
+</style>
+</head>
+<body>
+<header class="client-masthead"><div class="brand">${brandHtml(HTML_REPORT_DEFAULT_THEME, false)}</div></header>
+<main class="unavailable">
+<h1>Report not found</h1>
+<p>This link may have expired, been revoked, or been copied incorrectly.</p>
+<p class="next-step">Ask the person who shared the report for a new link.</p>
+</main>
+</body>
+</html>`;
+}
 function renderHtmlReport(input, theme = HTML_REPORT_DEFAULT_THEME, options = {}) {
     const checkedTheme = parseTheme(theme);
+    const sharedView = options.whiteLabel === true && options.profile !== 'pdf-summary';
     const runUrl = html_report_httpUrl(input.run.url, 'run.url');
     const decision = input.summary.passed ? 'Gate passed' : 'Gate failed';
     const delta = input.scoreDelta === null
@@ -19842,6 +19914,15 @@ function renderHtmlReport(input, theme = HTML_REPORT_DEFAULT_THEME, options = {}
         : renderedResults
             .map((result) => findingHtml(result, input.analysis))
             .join('\n');
+    const brand = `<div class="brand">${brandHtml(checkedTheme, options.whiteLabel === true)}</div>`;
+    const title = `<h1>${escapeText(input.project.repo)}</h1>
+<p class="target">Target: <a href="${escapeAttribute(runUrl)}" target="_blank" rel="noopener noreferrer">${escapeText(runUrl)}</a></p>`;
+    const download = options.pdfHref === undefined
+        ? ''
+        : `<p class="download"><a href="${escapeAttribute(options.pdfHref)}" download>Download PDF</a></p>\n`;
+    const scoreDelta = `<p class="delta">${delta}</p>`;
+    const scorePanel = `<div${sharedView ? ' class="score-panel"' : ''}><span class="score-label">Quality score</span><p class="score">${input.score}<small>/100</small></p>${sharedView ? scoreDelta : ''}</div>`;
+    const gateDecision = `<div class="decision"><h2 id="decision-heading">${decision}</h2>${sharedView ? '' : scoreDelta}${input.summary.failReason === undefined ? '' : `<p>${escapeText(input.summary.failReason)}</p>`}</div>`;
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -19927,22 +20008,18 @@ dd { margin: .25rem 0 0; overflow-wrap: anywhere; }
   .finding { break-inside: avoid; }
   a[href^="http"]::after { content: " (" attr(href) ")"; font-size: .85em; font-weight: 400; overflow-wrap: anywhere; }
 }
-</style>
+${sharedView ? CLIENT_REPORT_STYLES : ''}</style>
 </head>
 <body>
-<div class="report-shell">
+${sharedView ? `<div class="client-masthead">${brand}</div>\n` : ''}<div class="report-shell">
 <header class="report-header">
-<div class="brand">${brandHtml(checkedTheme, options.whiteLabel === true)}</div>
-<h1>${escapeText(input.project.repo)}</h1>
-<p class="target">Target: <a href="${escapeAttribute(runUrl)}" target="_blank" rel="noopener noreferrer">${escapeText(runUrl)}</a></p>
-${options.pdfHref === undefined ? '' : `<p class="download"><a href="${escapeAttribute(options.pdfHref)}" download>Download PDF</a></p>\n`}<dl class="metadata">
-${metadataItem('Run time', input.run.createdAt)}${metadataItem('Default branch', input.project.defaultBranch)}${metadataItem('Bundle', input.bundle)}${optionalMetadata}
+${sharedView ? `<div class="report-heading"><div>${title}</div>${download}</div>\n` : `${brand}\n${title}\n${download}`}<dl class="metadata">
+${sharedView ? reportTime(input.run.createdAt) : metadataItem('Run time', input.run.createdAt)}${metadataItem('Default branch', input.project.defaultBranch)}${metadataItem('Bundle', sharedView ? BUNDLE_DETAILS[input.bundle].name : input.bundle)}${optionalMetadata}
 </dl>
 </header>
 <main class="report-main">
-<section class="summary" aria-labelledby="decision-heading">
-<div><span class="score-label">Quality score</span><p class="score">${input.score}<small>/100</small></p></div>
-<div class="decision"><h2 id="decision-heading">${decision}</h2><p class="delta">${delta}</p>${input.summary.failReason === undefined ? '' : `<p>${escapeText(input.summary.failReason)}</p>`}</div>
+<section class="summary"${sharedView ? ` data-result="${input.summary.passed ? 'passed' : 'failed'}"` : ''} aria-labelledby="decision-heading">
+${sharedView ? `${gateDecision}\n${scorePanel}` : `${scorePanel}\n${gateDecision}`}
 </section>
 <section class="severity-overview" aria-labelledby="severity-heading">
 <h2 id="severity-heading">Severity overview</h2>
@@ -20155,7 +20232,7 @@ function scrubCheckResult(result) {
     };
 }
 const embeddedTextUrlPattern = /\bhttps?:\/\/[^\s"'<>`]+/gi;
-function scrubText(value) {
+function scrub_scrubText(value) {
     return redactSecretParameters(value.replace(embeddedTextUrlPattern, (url) => scrub_scrubUrl(url)));
 }
 //# sourceMappingURL=scrub.js.map
@@ -20175,6 +20252,15 @@ const GEO_DISCLAIMER = 'GEO checks read what this site publishes to AI crawlers 
 const SEO_DEEP_DISCLAIMER = 'Deep SEO crawls a bounded slice of the site from this page; pages beyond the crawl limit are not checked.';
 const FULL_DISCLAIMER = 'Automated checks read one page for accessibility, SEO, response headers, and links. They are a starting point, not a legal conformance assessment, a ranking prediction, or a penetration test.';
 const DEFAULT_TOP_ISSUE_LIMIT = 3;
+/**
+ * How many findings "All findings" lists. A pull request comment is capped at
+ * 65,536 characters by GitHub, so it lists fewer than the job summary does, and
+ * says where the rest are.
+ */
+const DEFAULT_COMMENT_FINDING_LIMIT = 50;
+const DEFAULT_SUMMARY_FINDING_LIMIT = 500;
+/** A message is an explanation, not a document; longer ones are cut. */
+const MESSAGE_LENGTH_LIMIT = 300;
 const BUNDLE_PRESENTATION = {
     a11y: {
         disclaimer: ACCESSIBILITY_DISCLAIMER,
@@ -20309,6 +20395,38 @@ function trustedHelpUrl(value) {
         return undefined;
     }
 }
+// A message arrives from the runner and is posted under QualityGate's name, so
+// it must stay plain text: Markdown syntax is escaped, and a zero-width space
+// breaks what escaping does not reliably stop on GitHub, namely `@` mentions,
+// `#` references, and bare URLs that would autolink.
+const MARKDOWN_SPECIAL = /[\\`*_{}[\]()<>+!|~-]/g;
+function plainText(value) {
+    return value
+        .replace(MARKDOWN_SPECIAL, (character) => `\\${character}`)
+        .replace(/[@#]/g, (character) => `${character}\u200b`)
+        .replace(/(https?):\/\//gi, '$1:\u200b//')
+        .replace(/\bwww\./gi, 'www\u200b.');
+}
+/**
+ * A finding's message as one safe line. Backtick spans in the engine's messages
+ * name the exact fix (`X-Content-Type-Options: nosniff`), so they stay code;
+ * everything else is escaped so nothing in it links, mentions, or renders HTML.
+ */
+function formatMessage(message) {
+    let text = scrubText(message).replace(/\s+/g, ' ').trim();
+    if (text.length > MESSAGE_LENGTH_LIMIT) {
+        text = `${text.slice(0, MESSAGE_LENGTH_LIMIT - 1).trimEnd()}…`;
+    }
+    const parts = text.split('`');
+    // An odd number of parts means every backtick has a partner.
+    if (parts.length % 2 === 0)
+        return plainText(text);
+    return parts
+        .map((part, index) => index % 2 === 1 && part.trim() !== ''
+        ? inlineCode(part)
+        : plainText(part))
+        .join('');
+}
 function formatIssue({ checkId, issue }, attributed) {
     const safeIssue = scrubIssue(issue);
     const selector = safeIssue.selector === undefined
@@ -20319,18 +20437,51 @@ function formatIssue({ checkId, issue }, attributed) {
     // Which check found it only matters when more than one check ran; on a
     // single-check bundle the label would repeat the bundle line above it.
     const source = attributed ? ` _(${render_checkLabel(checkId)})_` : '';
-    return `- **[${safeIssue.severity}] ${safeRuleId(safeIssue.ruleId)}** — ${selector}${source}${help}`;
+    const message = formatMessage(safeIssue.message);
+    return `- **[${safeIssue.severity}] ${safeRuleId(safeIssue.ruleId)}** — ${selector}${source}${help}${message === '' ? '' : `\n  ${message}`}`;
+}
+function sortedBySeverity(issues) {
+    return issues
+        .map((entry, index) => ({ entry, index }))
+        .sort((left, right) => severityRank[left.entry.issue.severity] -
+        severityRank[right.entry.issue.severity] || left.index - right.index)
+        .map(({ entry }) => entry);
+}
+/**
+ * Every finding, grouped by the check that reported it, worst first. The
+ * prioritized list answers "what first"; this answers "what else", which a
+ * reader otherwise has no way to see.
+ */
+function allFindings(results, limit, multiCheck, truncatedHint) {
+    const lines = ['', '### All findings'];
+    let shown = 0;
+    let total = 0;
+    for (const result of results) {
+        total += result.issues.length;
+        if (result.issues.length === 0)
+            continue;
+        const entries = sortedBySeverity(result.issues.map((issue) => ({ checkId: result.checkId, issue })));
+        const room = Math.max(0, limit - shown);
+        if (room === 0)
+            continue;
+        const listed = entries.slice(0, room);
+        shown += listed.length;
+        if (multiCheck) {
+            lines.push('', `#### ${render_checkLabel(result.checkId)} (${result.issues.length.toLocaleString('en-US')})`);
+        }
+        lines.push(...listed.map((entry) => formatIssue(entry, false)));
+    }
+    if (total > shown) {
+        const hidden = total - shown;
+        lines.push('', `${hidden.toLocaleString('en-US')} more ${hidden === 1 ? 'finding is' : 'findings are'} not listed here.${truncatedHint}`);
+    }
+    return lines;
 }
 function attributedIssues(results) {
     return results.flatMap(({ checkId, issues }) => issues.map((issue) => ({ checkId, issue })));
 }
 function topIssues(issues, limit) {
-    return issues
-        .map((entry, index) => ({ entry, index }))
-        .sort((left, right) => severityRank[left.entry.issue.severity] -
-        severityRank[right.entry.issue.severity] || left.index - right.index)
-        .slice(0, limit)
-        .map(({ entry }) => entry);
+    return sortedBySeverity(issues).slice(0, limit);
 }
 function render_countBySeverity(issues) {
     const counts = {
@@ -20449,9 +20600,14 @@ function decisionLine(verdict, presentation, diff) {
     }
     return `> ❌ ${verdict.failReason ?? 'Configured limits were exceeded.'}`;
 }
-function renderBody(input, flavor) {
+function renderBody(input, flavor, target) {
     const limit = input.topIssueLimit ?? DEFAULT_TOP_ISSUE_LIMIT;
     assertNonnegativeInteger(limit, 'topIssueLimit');
+    const findingLimit = input.findingLimit ??
+        (target === 'comment'
+            ? DEFAULT_COMMENT_FINDING_LIMIT
+            : DEFAULT_SUMMARY_FINDING_LIMIT);
+    assertNonnegativeInteger(findingLimit, 'findingLimit');
     if (input.report.results.length === 0) {
         throw new TypeError('Expected at least one check result to render');
     }
@@ -20478,6 +20634,14 @@ function renderBody(input, flavor) {
     const breakdownLines = multiCheck
         ? ['', '### Findings by check', ...checkBreakdown(input.report.results)]
         : [];
+    const totalIssues = input.report.results.reduce((total, result) => total + result.issues.length, 0);
+    // When the prioritized list already shows everything, a second copy of it
+    // would only make the comment longer.
+    const allFindingLines = totalIssues > selectedIssues.length
+        ? allFindings(input.report.results, findingLimit, multiCheck, target === 'comment'
+            ? " The workflow run's job summary lists more."
+            : '')
+        : [];
     return [
         input.summary.passed
             ? '## ✅ QualityGate passed'
@@ -20502,6 +20666,7 @@ function renderBody(input, flavor) {
         '',
         '### Prioritized issues',
         ...issueLines,
+        ...allFindingLines,
         '',
         presentation.disclaimer,
         ...(flavor === 'bitbucket' ? [] : ['', '</details>']),
@@ -20512,10 +20677,39 @@ function renderPrComment(input, options = {}) {
     const marker = flavor === 'bitbucket'
         ? QUALITYGATE_BITBUCKET_COMMENT_MARKER
         : QUALITYGATE_COMMENT_MARKER;
-    return `${renderBody(input, flavor)}\n${marker}`;
+    return `${renderBody(input, flavor, 'comment')}\n${marker}`;
 }
 function renderJobSummary(input) {
-    return renderBody(input, 'github');
+    return renderBody(input, 'github', 'summary');
+}
+/**
+ * The result as plain text for the job log, where Markdown is not rendered and
+ * a failed step otherwise shows no reason at all.
+ */
+function renderLogSummary(input) {
+    const { report, summary, failOn } = input;
+    const counts = summary.issueCounts;
+    const lines = [
+        summary.passed
+            ? 'QualityGate passed.'
+            : `QualityGate failed: ${summary.failReason ?? 'configured limits were exceeded.'}`,
+        `Scanned ${scrubUrl(report.url)} with the ${safeRuleId(report.bundleId)} bundle.`,
+        `Found ${counts.critical} critical (max ${failOn.maxCritical}), ${counts.serious} serious (max ${failOn.maxSerious}), ${counts.moderate} moderate, ${counts.minor} minor.`,
+    ];
+    for (const result of report.results) {
+        if (result.issues.length === 0)
+            continue;
+        lines.push('', `${render_checkLabel(result.checkId)}:`);
+        for (const { issue } of sortedBySeverity(result.issues.map((issue) => ({ checkId: result.checkId, issue })))) {
+            const safe = scrubIssue(issue);
+            const where = safe.selector === undefined
+                ? 'page'
+                : safe.selector.replace(/\s+/g, ' ');
+            const help = trustedHelpUrl(safe.helpUrl);
+            lines.push(`  [${safe.severity}] ${safeRuleId(safe.ruleId)} (${where})`, `    ${scrubText(safe.message).replace(/\s+/g, ' ').trim()}`, ...(help === undefined ? [] : [`    Help: ${help}`]));
+        }
+    }
+    return lines.join('\n');
 }
 //# sourceMappingURL=render.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/index.js
@@ -20537,7 +20731,7 @@ function redact(text, secrets) {
     let result = text;
     for (const secret of secrets)
         result = result.split(secret).join('[REDACTED]');
-    return scrubText(result);
+    return scrub_scrubText(result);
 }
 function escapeData(value) {
     return value.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');

@@ -191682,7 +191682,7 @@ var SSEClientTransport = class {
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/sse.js
 var import_node_crypto = __nccwpck_require__(598);
-var import_node_tls = __nccwpck_require__(930);
+var import_node_tls = __nccwpck_require__(311);
 
 // utils/build/raw-body.ts
 var import_bytes = __toESM(require_bytes());
@@ -194154,7 +194154,7 @@ module.exports = require("node:stream");
 
 /***/ }),
 
-/***/ 930:
+/***/ 311:
 /***/ ((module) => {
 
 "use strict";
@@ -195016,960 +195016,6 @@ const brokenLinksCheck = {
     },
 };
 //# sourceMappingURL=broken-links.js.map
-;// CONCATENATED MODULE: ../core/dist/checks/security-headers.js
-
-const SECURITY_HEADERS_CHECK_ID = 'security-headers';
-// Response-header hygiene for the scanned document (QG-P1-FF2). Only headers a
-// browser acts on, read from the final response after redirects.
-//
-// Severity is calibrated on two axes: how cheap the fix is, and who controls it.
-// This product scans preview deployments, and a preview's edge often differs
-// from production, so headers set by the host rather than the application stay
-// below the default gate. Findings a framework config fixes in one line, with no
-// judgement call, are the ones allowed to fail a build.
-const security_headers_HELP = {
-    csp: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy',
-    frame: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options',
-    hsts: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security',
-    nosniff: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options',
-    permissions: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy',
-    referrer: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy',
-    transport: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers',
-};
-/** Six months, the floor every major preload list requires. */
-const MINIMUM_HSTS_MAX_AGE_SECONDS = 15_552_000;
-function directive(policy, name) {
-    return policy
-        .split(';')
-        .map((part) => part.trim())
-        .find((part) => part.toLowerCase().startsWith(`${name} `) ||
-        part.toLowerCase() === name);
-}
-function parseHstsMaxAge(value) {
-    const match = /(?:^|;|\s)max-age\s*=\s*"?(\d+)"?/i.exec(value);
-    if (match?.[1] === undefined)
-        return null;
-    const seconds = Number(match[1]);
-    return Number.isFinite(seconds) ? seconds : null;
-}
-/**
- * Maps a header set onto issues. Pure and exported so the rule set can be tested
- * without launching a browser.
- */
-function evaluateSecurityHeaders(headers, pageUrl) {
-    const issues = [];
-    const add = (ruleId, severity, message, helpUrl) => {
-        issues.push({ ruleId, severity, message, url: pageUrl, helpUrl });
-    };
-    // Playwright lowercases header names; normalise anyway so a hand-built map
-    // behaves identically.
-    const header = (name) => {
-        const match = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
-        return match?.[1]?.trim();
-    };
-    const isHttps = pageUrl.toLowerCase().startsWith('https://');
-    const csp = header('content-security-policy');
-    if (!isHttps) {
-        add('insecure-transport', 'serious', 'The page is served over plain HTTP, so every header below can be stripped in transit and its content can be modified.', security_headers_HELP.transport);
-    }
-    if (header('x-content-type-options')?.toLowerCase() !== 'nosniff') {
-        add('x-content-type-options-missing', 'serious', 'Responses do not set `X-Content-Type-Options: nosniff`, so a browser may execute a mistyped response as script.', security_headers_HELP.nosniff);
-    }
-    // Either header answers clickjacking. CSP `frame-ancestors` supersedes
-    // X-Frame-Options where both are present, so one of the two is enough.
-    const framingProtected = header('x-frame-options') !== undefined ||
-        (csp !== undefined && directive(csp, 'frame-ancestors') !== undefined);
-    if (!framingProtected) {
-        add('framing-protection-missing', 'serious', 'Neither `X-Frame-Options` nor a CSP `frame-ancestors` directive is set, so the page can be framed by any site.', security_headers_HELP.frame);
-    }
-    if (csp === undefined) {
-        add('content-security-policy-missing', 'moderate', 'No Content-Security-Policy is set. Adopting one is real work, so this is reported rather than gated.', security_headers_HELP.csp);
-    }
-    else {
-        const scriptSource = directive(csp, 'script-src') ?? directive(csp, 'default-src');
-        const unsafe = ["'unsafe-inline'", "'unsafe-eval'"].filter((token) => scriptSource?.toLowerCase().includes(token));
-        if (unsafe.length > 0) {
-            add('content-security-policy-unsafe', 'moderate', `The script source policy allows ${unsafe.join(' and ')}, which removes most of the protection the policy is there to provide.`, security_headers_HELP.csp);
-        }
-    }
-    // HSTS is usually configured at the edge rather than in the application, and
-    // preview hosts frequently differ from production, so it reports below the
-    // gate even though it matters.
-    if (isHttps) {
-        const hsts = header('strict-transport-security');
-        if (hsts === undefined) {
-            add('hsts-missing', 'moderate', 'No `Strict-Transport-Security` header, so a first visit can be downgraded to HTTP.', security_headers_HELP.hsts);
-        }
-        else {
-            const maxAge = parseHstsMaxAge(hsts);
-            if (maxAge === null) {
-                add('hsts-invalid', 'moderate', 'The `Strict-Transport-Security` header declares no readable `max-age`, so browsers ignore it.', security_headers_HELP.hsts);
-            }
-            else if (maxAge < MINIMUM_HSTS_MAX_AGE_SECONDS) {
-                add('hsts-max-age-short', 'moderate', `The HSTS \`max-age\` is ${maxAge} seconds, under the ${MINIMUM_HSTS_MAX_AGE_SECONDS} that preload lists require.`, security_headers_HELP.hsts);
-            }
-        }
-    }
-    if (header('referrer-policy') === undefined) {
-        add('referrer-policy-missing', 'moderate', 'No `Referrer-Policy` header, so full URLs of this site can leak to third parties in the Referer header.', security_headers_HELP.referrer);
-    }
-    if (header('permissions-policy') === undefined) {
-        add('permissions-policy-missing', 'minor', 'No `Permissions-Policy` header, so embedded content inherits access to features such as camera, microphone, and geolocation.', security_headers_HELP.permissions);
-    }
-    const poweredBy = header('x-powered-by');
-    if (poweredBy !== undefined) {
-        add('version-disclosure', 'minor', 'The `X-Powered-By` header advertises the server stack, which narrows the search for a working exploit.', security_headers_HELP.transport);
-    }
-    return issues;
-}
-const securityHeadersCheck = {
-    id: SECURITY_HEADERS_CHECK_ID,
-    run(context) {
-        // No response means no evidence. Reporting every header as missing would
-        // invent findings, so this fails the run instead (ADR-0010's instinct: no
-        // verdict is better than a wrong one).
-        if (context.responseHeaders === null) {
-            throw new ScanInfrastructureError('response_headers_unavailable', 'The navigation produced no response, so headers could not be read');
-        }
-        return Promise.resolve({
-            checkId: SECURITY_HEADERS_CHECK_ID,
-            issues: evaluateSecurityHeaders(context.responseHeaders, context.url),
-        });
-    },
-};
-//# sourceMappingURL=security-headers.js.map
-;// CONCATENATED MODULE: ../core/dist/checks/performance.js
-
-const PERFORMANCE_CHECK_ID = 'performance';
-// Lighthouse performance (QG-P5-05). Performance was held back from earlier
-// phases because single Lighthouse runs are noisy in CI. Three mitigations make
-// the result stable enough to gate on:
-//
-// 1. Simulated throttling. Lighthouse records one unthrottled load and models
-//    the throttled timings, so runner CPU and network jitter move the score far
-//    less than devtools throttling does.
-// 2. Several runs, reduced to Lighthouse's own median run (closest to the
-//    median FCP and TTI), so one cold or unlucky load cannot decide the gate.
-// 3. A retry per run when Lighthouse reports a runtime error, so a transient
-//    failure costs one extra load instead of the whole scan.
-//
-// The score is Lighthouse's own 0-100 performance score, a natural score that
-// ADR-0008 allows a check to carry. The gate still counts issues: a metric
-// Lighthouse rates poor is serious, one that needs improvement is moderate, and
-// a failing insight is minor advice that never fails a build by default.
-const DEFAULT_PERFORMANCE_RUNS = 3;
-const MAX_PERFORMANCE_RUNS = 5;
-const ATTEMPTS_PER_RUN = 2;
-// A navigation budget per load. Lighthouse's own default is 45 seconds, and a
-// preview that has not settled by then is a result worth reporting as a failure
-// rather than waiting on.
-const MAX_WAIT_FOR_LOAD_MS = 45_000;
-/** Adapts the real Lighthouse modules, wherever they were loaded from. */
-function createLighthouseEngine(modules) {
-    return {
-        async run(url, { port, formFactor }) {
-            const runnerResult = await modules.lighthouse.default(url, {
-                port,
-                logLevel: 'error',
-                output: 'json',
-                onlyCategories: ['performance'],
-                throttlingMethod: 'simulate',
-                maxWaitForLoad: MAX_WAIT_FOR_LOAD_MS,
-                disableFullPageScreenshot: true,
-                locale: 'en-US',
-            }, formFactor === 'desktop' ? modules.lighthouse.desktopConfig : undefined);
-            if (runnerResult === undefined) {
-                throw new Error('Lighthouse returned no result');
-            }
-            return runnerResult.lhr;
-        },
-        medianRun(results) {
-            try {
-                return modules.medianRun.computeMedianRun([
-                    ...results,
-                ]);
-            }
-            catch {
-                // Lighthouse's median needs FCP and TTI on every run. Without them,
-                // fall back to the run with the median performance score.
-                return medianByScore(results);
-            }
-        },
-    };
-}
-function medianByScore(results) {
-    const sorted = [...results].sort((left, right) => (left.categories.performance?.score ?? 0) -
-        (right.categories.performance?.score ?? 0));
-    const median = sorted[Math.floor((sorted.length - 1) / 2)];
-    if (median === undefined)
-        throw new Error('No Lighthouse runs to reduce');
-    return median;
-}
-const loadInstalledLighthouse = async () => {
-    const [lighthouse, medianRun] = await Promise.all([
-        Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 543, 19)),
-        Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 663, 19)),
-    ]);
-    return createLighthouseEngine({
-        lighthouse: lighthouse,
-        medianRun: medianRun,
-    });
-};
-function readPerformanceConfig(config) {
-    const runs = config.runs ?? DEFAULT_PERFORMANCE_RUNS;
-    if (typeof runs !== 'number' ||
-        !Number.isInteger(runs) ||
-        runs < 1 ||
-        runs > MAX_PERFORMANCE_RUNS) {
-        throw new TypeError(`performance config.runs must be an integer from 1 to ${MAX_PERFORMANCE_RUNS}`);
-    }
-    const formFactor = config.formFactor ?? 'mobile';
-    if (formFactor !== 'mobile' && formFactor !== 'desktop') {
-        throw new TypeError("performance config.formFactor must be 'mobile' or 'desktop'");
-    }
-    return { runs, formFactor };
-}
-function metricSeverity(score) {
-    // Lighthouse's own bands: under 0.5 is red (poor), under 0.9 is orange.
-    if (score < 0.5)
-        return 'serious';
-    if (score < 0.9)
-        return 'moderate';
-    return null;
-}
-function learnMoreUrl(description) {
-    return /\((https:\/\/[^)\s]+)\)/.exec(description)?.[1];
-}
-const SCORED_INSIGHT_MODES = new Set(['binary', 'metricSavings', 'numeric']);
-/**
- * Maps one Lighthouse result onto issues. Pure and exported so the mapping can
- * be tested against recorded results without running Lighthouse.
- *
- * Rule ids are Lighthouse audit ids, which keeps fingerprints stable across
- * runs even though the measured values in each message change every time.
- */
-function evaluateLighthouseResult(result, pageUrl) {
-    const category = result.categories.performance;
-    if (category === undefined)
-        return [];
-    const metrics = [];
-    const insights = [];
-    for (const ref of category.auditRefs) {
-        const audit = result.audits[ref.id];
-        if (audit === undefined || audit.score === null)
-            continue;
-        const helpUrl = learnMoreUrl(audit.description);
-        if (ref.weight > 0) {
-            const severity = metricSeverity(audit.score);
-            if (severity === null)
-                continue;
-            const range = severity === 'serious' ? 'poor' : 'needs-improvement';
-            const value = audit.displayValue ? ` is ${audit.displayValue},` : ' is';
-            metrics.push({
-                ruleId: audit.id,
-                severity,
-                message: `${audit.title}${value} in Lighthouse's ${range} range.`,
-                url: pageUrl,
-                ...(helpUrl ? { helpUrl } : {}),
-            });
-            continue;
-        }
-        if (ref.group === 'insights' &&
-            SCORED_INSIGHT_MODES.has(audit.scoreDisplayMode) &&
-            audit.score < 0.9) {
-            const detail = audit.displayValue ? `: ${audit.displayValue}` : '';
-            insights.push({
-                ruleId: audit.id,
-                severity: 'minor',
-                message: `${audit.title}${detail}.`,
-                url: pageUrl,
-                ...(helpUrl ? { helpUrl } : {}),
-            });
-        }
-    }
-    return [...metrics, ...insights];
-}
-async function runWithRetry(engine, url, options) {
-    let failure;
-    for (let attempt = 0; attempt < ATTEMPTS_PER_RUN; attempt += 1) {
-        try {
-            const result = await engine.run(url, options);
-            if (result.runtimeError === undefined)
-                return { result };
-            failure = result.runtimeError.code;
-        }
-        catch (error) {
-            failure = error instanceof Error ? error.message : String(error);
-        }
-    }
-    return { failure: failure ?? 'unknown Lighthouse failure' };
-}
-function createPerformanceCheck(options = {}) {
-    const loadLighthouse = options.loadLighthouse ?? loadInstalledLighthouse;
-    return {
-        id: PERFORMANCE_CHECK_ID,
-        requiresDebuggingPort: true,
-        async run(context) {
-            const config = readPerformanceConfig(context.config);
-            if (context.debuggingPort === null) {
-                throw new Error('The performance check needs a browser DevTools port; the runner did not provide one');
-            }
-            // Lighthouse drives its own tab and can only add headers to every
-            // request it makes, which would hand the preview's credentials to each
-            // third-party origin the page loads.
-            if (context.authenticated === true) {
-                throw new ScanInfrastructureError('performance_analysis_failed', 'The perf bundle cannot scan a password-protected preview. Lighthouse would send the preview credentials to every third-party origin the page loads.');
-            }
-            let engine;
-            try {
-                engine = await loadLighthouse();
-            }
-            catch (error) {
-                throw new ScanInfrastructureError('performance_engine_unavailable', 'Lighthouse could not be loaded', error);
-            }
-            const runOptions = {
-                port: context.debuggingPort,
-                formFactor: config.formFactor,
-            };
-            const results = [];
-            const failures = [];
-            for (let run = 0; run < config.runs; run += 1) {
-                const outcome = await runWithRetry(engine, context.url, runOptions);
-                if (outcome.result) {
-                    await context.validateFinalUrl?.(outcome.result.finalDisplayedUrl);
-                    results.push(outcome.result);
-                }
-                else if (outcome.failure)
-                    failures.push(outcome.failure);
-            }
-            const median = results.length === 0
-                ? undefined
-                : results.length === 1
-                    ? results[0]
-                    : engine.medianRun(results);
-            const score = median?.categories.performance?.score;
-            if (median === undefined || score === null || score === undefined) {
-                throw new ScanInfrastructureError('performance_analysis_failed', `Lighthouse could not measure ${context.url}: ${failures.join(', ') || 'no performance score'}`);
-            }
-            return {
-                checkId: PERFORMANCE_CHECK_ID,
-                score: Math.round(score * 100),
-                issues: evaluateLighthouseResult(median, context.url),
-            };
-        },
-    };
-}
-const performanceCheck = createPerformanceCheck();
-//# sourceMappingURL=performance.js.map
-;// CONCATENATED MODULE: ../core/dist/checks/gitleaks-rules.js
-// Ported from the gitleaks rule set, v8.30.1 (https://github.com/gitleaks/gitleaks).
-// Copyright (c) 2019 Zachary Rice. Licensed under the MIT License.
-// Regexes are kept in gitleaks' Go syntax and converted by compileRule. The
-// first capture group is taken as the secret, so groups that are not the secret
-// are non-capturing (microsoft-teams-webhook).
-const GITLEAKS_VERSION = 'v8.30.1';
-const GITLEAKS_RULES = [
-    {
-        description: 'Identified a Private Key, which may compromise cryptographic security and sensitive data encryption.',
-        id: 'private-key',
-        keywords: ['-----begin'],
-        regex: String.raw `(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----`,
-    },
-    {
-        description: 'Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.',
-        entropy: 2,
-        id: 'stripe-access-token',
-        keywords: [
-            'sk_test',
-            'sk_live',
-            'sk_prod',
-            'rk_test',
-            'rk_live',
-            'rk_prod',
-        ],
-        regex: String.raw `\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Identified a pattern that may indicate AWS credentials, risking unauthorized cloud resource access and data breaches on AWS platforms.',
-        entropy: 3,
-        id: 'aws-access-token',
-        keywords: ['a3t', 'akia', 'asia', 'abia', 'acca'],
-        regex: String.raw `\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b`,
-    },
-    {
-        description: 'Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.',
-        entropy: 3,
-        id: 'github-pat',
-        keywords: ['ghp_'],
-        regex: String.raw `ghp_[0-9a-zA-Z]{36}`,
-    },
-    {
-        description: 'Found a GitHub Fine-Grained Personal Access Token, risking unauthorized repository access and code manipulation.',
-        entropy: 3,
-        id: 'github-fine-grained-pat',
-        keywords: ['github_pat_'],
-        regex: String.raw `github_pat_\w{82}`,
-    },
-    {
-        description: 'Discovered a GitHub OAuth Access Token, posing a risk of compromised GitHub account integrations and data leaks.',
-        entropy: 3,
-        id: 'github-oauth',
-        keywords: ['gho_'],
-        regex: String.raw `gho_[0-9a-zA-Z]{36}`,
-    },
-    {
-        description: 'Identified a GitHub App Token, which may compromise GitHub application integrations and source code security.',
-        entropy: 3,
-        id: 'github-app-token',
-        keywords: ['ghu_', 'ghs_'],
-        regex: String.raw `(?:ghu|ghs)_[0-9a-zA-Z]{36}`,
-    },
-    {
-        description: 'Detected a GitHub Refresh Token, which could allow prolonged unauthorized access to GitHub services.',
-        entropy: 3,
-        id: 'github-refresh-token',
-        keywords: ['ghr_'],
-        regex: String.raw `ghr_[0-9a-zA-Z]{36}`,
-    },
-    {
-        description: 'Identified a GitLab Personal Access Token, risking unauthorized access to GitLab repositories and codebase exposure.',
-        entropy: 3,
-        id: 'gitlab-pat',
-        keywords: ['glpat-'],
-        regex: String.raw `glpat-[\w-]{20}`,
-    },
-    {
-        description: 'Identified a GitLab Personal Access Token (routable), risking unauthorized access to GitLab repositories and codebase exposure.',
-        entropy: 4,
-        id: 'gitlab-pat-routable',
-        keywords: ['glpat-'],
-        regex: String.raw `\bglpat-[0-9a-zA-Z_-]{27,300}\.[0-9a-z]{2}[0-9a-z]{7}\b`,
-    },
-    {
-        description: 'Identified a Slack Bot token, which may compromise bot integrations and communication channel security.',
-        entropy: 3,
-        id: 'slack-bot-token',
-        keywords: ['xoxb'],
-        regex: String.raw `xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*`,
-    },
-    {
-        description: 'Found a Slack User token, posing a risk of unauthorized user impersonation and data access within Slack workspaces.',
-        entropy: 2,
-        id: 'slack-user-token',
-        keywords: ['xoxp-', 'xoxe-'],
-        regex: String.raw `xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}`,
-    },
-    {
-        description: 'Detected a Slack App-level token, risking unauthorized access to Slack applications and workspace data.',
-        entropy: 2,
-        id: 'slack-app-token',
-        keywords: ['xapp'],
-        regex: String.raw `(?i)xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+`,
-    },
-    {
-        description: 'Discovered a Slack Webhook, which could lead to unauthorized message posting and data leakage in Slack channels.',
-        id: 'slack-webhook-url',
-        keywords: ['hooks.slack.com'],
-        regex: String.raw `(?:https?://)?hooks.slack.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}`,
-    },
-    {
-        description: 'Detected a SendGrid API token, posing a risk of unauthorized email service operations and data exposure.',
-        entropy: 2,
-        id: 'sendgrid-api-token',
-        keywords: ['sg.'],
-        regex: String.raw `\b(SG\.(?i)[a-z0-9=_\-\.]{66})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Found an OpenAI API Key, posing a risk of unauthorized access to AI services and data manipulation.',
-        entropy: 3,
-        id: 'openai-api-key',
-        keywords: ['t3blbkfj'],
-        regex: String.raw `\b(sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})\b|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Identified an Anthropic API Key, which may compromise AI assistant integrations and expose sensitive data to unauthorized access.',
-        id: 'anthropic-api-key',
-        keywords: ['sk-ant-api03'],
-        regex: String.raw `\b(sk-ant-api03-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Detected an Anthropic Admin API Key, risking unauthorized access to administrative functions and sensitive AI model configurations.',
-        id: 'anthropic-admin-api-key',
-        keywords: ['sk-ant-admin01'],
-        regex: String.raw `\b(sk-ant-admin01-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Uncovered an npm access token, potentially compromising package management and code repository access.',
-        entropy: 2,
-        id: 'npm-access-token',
-        keywords: ['npm_'],
-        regex: String.raw `(?i)\b(npm_[a-z0-9]{36})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Discovered a PyPI upload token, potentially compromising Python package distribution and repository integrity.',
-        entropy: 3,
-        id: 'pypi-upload-token',
-        keywords: ['pypi-ageichlwas5vcmc'],
-        regex: String.raw `pypi-AgEIcHlwaS5vcmc[\w-]{50,1000}`,
-    },
-    {
-        description: 'Uncovered a Shopify access token, which could lead to unauthorized e-commerce platform access and data breaches.',
-        entropy: 2,
-        id: 'shopify-access-token',
-        keywords: ['shpat_'],
-        regex: String.raw `shpat_[a-fA-F0-9]{32}`,
-    },
-    {
-        description: 'Detected a Shopify custom access token, potentially compromising custom app integrations and e-commerce data security.',
-        entropy: 2,
-        id: 'shopify-custom-access-token',
-        keywords: ['shpca_'],
-        regex: String.raw `shpca_[a-fA-F0-9]{32}`,
-    },
-    {
-        description: 'Identified a Shopify private app access token, risking unauthorized access to private app data and store operations.',
-        entropy: 2,
-        id: 'shopify-private-app-access-token',
-        keywords: ['shppa_'],
-        regex: String.raw `shppa_[a-fA-F0-9]{32}`,
-    },
-    {
-        description: 'Found a Shopify shared secret, posing a risk to application authentication and e-commerce platform security.',
-        entropy: 2,
-        id: 'shopify-shared-secret',
-        keywords: ['shpss_'],
-        regex: String.raw `shpss_[a-fA-F0-9]{32}`,
-    },
-    {
-        description: 'Found a Mailgun private API token, risking unauthorized email service operations and data breaches.',
-        id: 'mailgun-private-api-token',
-        keywords: ['mailgun'],
-        regex: String.raw `(?i)[\w.-]{0,50}?(?:mailgun)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}(key-[a-f0-9]{32})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Discovered a DigitalOcean Personal Access Token, posing a threat to cloud infrastructure security and data privacy.',
-        entropy: 3,
-        id: 'digitalocean-pat',
-        keywords: ['dop_v1_'],
-        regex: String.raw `\b(dop_v1_[a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Found a DigitalOcean OAuth Access Token, risking unauthorized cloud resource access and data compromise.',
-        entropy: 3,
-        id: 'digitalocean-access-token',
-        keywords: ['doo_v1_'],
-        regex: String.raw `\b(doo_v1_[a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Discovered a Hugging Face Access token, which could lead to unauthorized access to AI models and sensitive data.',
-        entropy: 2,
-        id: 'huggingface-access-token',
-        keywords: ['hf_'],
-        regex: String.raw `\b(hf_(?i:[a-z]{34}))(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Detected a Linear API Token, posing a risk to project management tools and sensitive task data.',
-        entropy: 2,
-        id: 'linear-api-key',
-        keywords: ['lin_api_'],
-        regex: String.raw `lin_api_(?i)[a-z0-9]{40}`,
-    },
-    {
-        description: 'Notion API token',
-        entropy: 4,
-        id: 'notion-api-token',
-        keywords: ['ntn_'],
-        regex: String.raw `\b(ntn_[0-9]{11}[A-Za-z0-9]{32}[A-Za-z0-9]{3})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Discovered a Doppler API token, posing a risk to environment and secrets management security.',
-        entropy: 2,
-        id: 'doppler-api-token',
-        keywords: ['dp.pt.'],
-        regex: String.raw `dp\.pt\.(?i)[a-z0-9]{43}`,
-    },
-    {
-        description: 'Uncovered a Postman API token, potentially compromising API testing and development workflows.',
-        entropy: 3,
-        id: 'postman-api-token',
-        keywords: ['pmak-'],
-        regex: String.raw `\b(PMAK-(?i)[a-f0-9]{24}\-[a-f0-9]{34})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Detected a Square Access Token, risking unauthorized payment processing and financial transaction exposure.',
-        entropy: 2,
-        id: 'square-access-token',
-        keywords: ['sq0atp-', 'eaaa'],
-        regex: String.raw `\b((?:EAAA|sq0atp-)[\w-]{22,60})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Uncovered a Databricks API token, which may compromise big data analytics platforms and sensitive data processing.',
-        entropy: 3,
-        id: 'databricks-api-token',
-        keywords: ['dapi'],
-        regex: String.raw `\b(dapi[a-f0-9]{32}(?:-\d)?)(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Identified a PlanetScale API token, potentially compromising database management and operations.',
-        entropy: 3,
-        id: 'planetscale-api-token',
-        keywords: ['pscale_tkn_'],
-        regex: String.raw `\b(pscale_tkn_(?i)[\w=\.-]{32,64})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Found a Pulumi API token, posing a risk to infrastructure as code services and cloud resource management.',
-        entropy: 2,
-        id: 'pulumi-api-token',
-        keywords: ['pul-'],
-        regex: String.raw `\b(pul-[a-f0-9]{40})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Uncovered a HashiCorp Terraform user/org API token, which may lead to unauthorized infrastructure management and security breaches.',
-        entropy: 3.5,
-        id: 'hashicorp-tf-api-token',
-        keywords: ['atlasv1'],
-        regex: String.raw `(?i)[a-z0-9]{14}\.(?-i:atlasv1)\.[a-z0-9\-_=]{60,70}`,
-    },
-    {
-        description: 'Detected a Perplexity API key, which could lead to unauthorized access to Perplexity AI services and data exposure.',
-        entropy: 4,
-        id: 'perplexity-api-key',
-        keywords: ['pplx-'],
-        regex: String.raw `\b(pplx-[a-zA-Z0-9]{48})(?:[\x60'"\s;]|\\[nr]|$|\b)`,
-    },
-    {
-        description: 'Found a Sentry.io User Token, risking unauthorized access to error tracking services and sensitive application data.',
-        entropy: 3.5,
-        id: 'sentry-user-token',
-        keywords: ['sntryu_'],
-        regex: String.raw `\b(sntryu_[a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Found a Sentry.io Organization Token, risking unauthorized access to error tracking services and sensitive application data.',
-        entropy: 4.5,
-        id: 'sentry-org-token',
-        keywords: ['sntrys_eyjpyxqio'],
-        regex: String.raw `\bsntrys_eyJpYXQiO[a-zA-Z0-9+/]{10,200}(?:LCJyZWdpb25fdXJs|InJlZ2lvbl91cmwi|cmVnaW9uX3VybCI6)[a-zA-Z0-9+/]{10,200}={0,2}_[a-zA-Z0-9+/]{43}(?:[^a-zA-Z0-9+/]|\z)`,
-    },
-    {
-        description: 'Discovered a Grafana service account token, posing a risk of compromised monitoring services and data integrity.',
-        entropy: 3,
-        id: 'grafana-service-account-token',
-        keywords: ['glsa_'],
-        regex: String.raw `(?i)\b(glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Uncovered a Fly.io API key',
-        entropy: 4,
-        id: 'flyio-access-token',
-        keywords: ['fo1_', 'fm1', 'fm2_'],
-        regex: String.raw `\b((?:fo1_[\w-]{43}|fm1[ar]_[a-zA-Z0-9+\/]{100,}={0,3}|fm2_[a-zA-Z0-9+\/]{100,}={0,3}))(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Discovered a potential Age encryption tool secret key, risking data decryption and unauthorized access to sensitive information.',
-        id: 'age-secret-key',
-        keywords: ['age-secret-key-1'],
-        regex: String.raw `AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}`,
-    },
-    {
-        description: 'Uncovered a possible 1Password service account token, potentially compromising access to secrets in vaults.',
-        entropy: 4,
-        id: '1password-service-account-token',
-        keywords: ['ops_'],
-        regex: String.raw `ops_eyJ[a-zA-Z0-9+/]{250,}={0,3}`,
-    },
-    {
-        description: 'Uncovered a Microsoft Teams Webhook, which could lead to unauthorized access to team collaboration tools and data leaks.',
-        id: 'microsoft-teams-webhook',
-        keywords: ['webhook.office.com', 'webhookb2', 'incomingwebhook'],
-        regex: String.raw `https://[a-z0-9]+\.webhook\.office\.com/webhookb2/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}@[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}/IncomingWebhook/[a-z0-9]{32}/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}`,
-    },
-    {
-        description: 'Detected a Heroku API Key, potentially compromising cloud application deployments and operational security.',
-        entropy: 4,
-        id: 'heroku-api-key-v2',
-        keywords: ['hrku-aa'],
-        regex: String.raw `\b((HRKU-AA[0-9a-zA-Z_-]{58}))(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-    {
-        description: 'Detected a Cloudflare Origin CA Key, potentially compromising cloud application deployments and operational security.',
-        entropy: 2,
-        id: 'cloudflare-origin-ca-key',
-        keywords: ['cloudflare', 'v1.0-'],
-        regex: String.raw `\b(v1\.0-[a-f0-9]{24}-[a-f0-9]{146})(?:[\x60'"\s;]|\\[nr]|$)`,
-    },
-];
-//# sourceMappingURL=gitleaks-rules.js.map
-;// CONCATENATED MODULE: ../core/dist/checks/secret-detection.js
-
-const REDACTED_PREFIX_CHARS = 4;
-function compileRule(rule) {
-    let source = rule.regex;
-    let caseInsensitive = false;
-    if (/\(\?i\)/.test(source)) {
-        caseInsensitive = true;
-        source = source.replaceAll('(?i)', '');
-    }
-    source = source
-        .replace(/\(\?-i:([^)]*)\)/g, '(?:$1)')
-        .replace(/\(\?i:([^)]*)\)/g, (_match, body) => body.replaceAll('a-z', 'a-zA-Z'))
-        .replaceAll('\\z', '$');
-    return {
-        description: rule.description,
-        entropy: rule.entropy,
-        id: rule.id,
-        keywords: rule.keywords.map((keyword) => keyword.toLowerCase()),
-        pattern: new RegExp(source, caseInsensitive ? 'gi' : 'g'),
-    };
-}
-const SECRET_RULES = GITLEAKS_RULES.map(compileRule);
-function shannonEntropy(value) {
-    const counts = new Map();
-    for (const character of value) {
-        counts.set(character, (counts.get(character) ?? 0) + 1);
-    }
-    let entropy = 0;
-    for (const count of counts.values()) {
-        const probability = count / value.length;
-        entropy -= probability * Math.log2(probability);
-    }
-    return entropy;
-}
-function redactSecret(secret) {
-    return `${secret.slice(0, REDACTED_PREFIX_CHARS)}… (${secret.length} chars)`;
-}
-function severityFor(ruleId, secret) {
-    return ruleId === 'stripe-access-token' && /^(sk|rk)_test_/.test(secret)
-        ? 'serious'
-        : 'critical';
-}
-function allowed(ruleId, secret) {
-    return ruleId === 'aws-access-token' && /EXAMPLE$/.test(secret);
-}
-function detectSecrets(text, rules = SECRET_RULES) {
-    const lower = text.toLowerCase();
-    const matches = [];
-    for (const rule of rules) {
-        if (rule.keywords.length > 0 &&
-            !rule.keywords.some((keyword) => lower.includes(keyword))) {
-            continue;
-        }
-        const secrets = new Set();
-        for (const match of text.matchAll(rule.pattern)) {
-            const secret = match[1] ?? match[0];
-            if (rule.entropy !== undefined && shannonEntropy(secret) < rule.entropy) {
-                continue;
-            }
-            if (allowed(rule.id, secret))
-                continue;
-            secrets.add(secret);
-        }
-        if (secrets.size === 0)
-            continue;
-        const [first] = secrets;
-        const severity = [...secrets].some((secret) => severityFor(rule.id, secret) === 'critical')
-            ? 'critical'
-            : 'serious';
-        matches.push({
-            count: secrets.size,
-            description: rule.description,
-            redacted: redactSecret(first),
-            ruleId: rule.id,
-            severity,
-        });
-    }
-    return matches;
-}
-//# sourceMappingURL=secret-detection.js.map
-;// CONCATENATED MODULE: ../core/dist/checks/secrets-exposure.js
-
-
-const SECRETS_EXPOSURE_CHECK_ID = 'secrets-exposure';
-const secrets_exposure_HELP = 'https://owasp.org/www-project-top-ten/2017/A3_2017-Sensitive_Data_Exposure';
-const DEFAULT_MAX_ASSET_BYTES = 2 * 1024 * 1024;
-const DEFAULT_MAX_ASSETS = 40;
-const DEFAULT_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
-const DEFAULT_SETTLE_TIMEOUT_MS = 5_000;
-function positive(value, fallback) {
-    return Number.isInteger(value) && value > 0
-        ? value
-        : fallback;
-}
-async function collectAssets(context, limits) {
-    return context.page.evaluate(async (limits) => {
-        const origin = location.origin;
-        const assets = [];
-        let total = 0;
-        let skippedOverSize = 0;
-        let skippedOverTotal = 0;
-        let skippedOverAssetCap = 0;
-        let unreadable = 0;
-        const accept = (text) => {
-            if (text.length > limits.maxAssetBytes) {
-                skippedOverSize += 1;
-                return false;
-            }
-            if (assets.length >= limits.maxAssets) {
-                skippedOverAssetCap += 1;
-                return false;
-            }
-            if (total + text.length > limits.maxTotalBytes) {
-                skippedOverTotal += 1;
-                return false;
-            }
-            total += text.length;
-            return true;
-        };
-        const selectorFor = (element) => {
-            const parts = [];
-            for (let node = element; node !== null && node !== document.documentElement; node = node.parentElement) {
-                const sameType = [...(node.parentElement?.children ?? [])].filter((sibling) => sibling.localName === node.localName);
-                parts.unshift(sameType.length > 1
-                    ? `${node.localName}:nth-of-type(${sameType.indexOf(node) + 1})`
-                    : node.localName);
-            }
-            return parts.join(' > ');
-        };
-        const scripts = [...document.querySelectorAll('script')];
-        for (const script of scripts) {
-            if (script.src)
-                continue;
-            const text = script.textContent ?? '';
-            if (text.trim() === '' || !accept(text))
-                continue;
-            assets.push({ kind: 'inline', selector: selectorFor(script), text });
-        }
-        const candidates = new Set();
-        for (const script of scripts) {
-            if (script.src)
-                candidates.add(script.src);
-        }
-        for (const entry of performance.getEntriesByType('resource')) {
-            const path = new URL(entry.name).pathname;
-            if (entry.initiatorType === 'script' ||
-                /\.(m?js|json)$/i.test(path) ||
-                ((entry.initiatorType === 'fetch' ||
-                    entry.initiatorType === 'xmlhttprequest') &&
-                    /json|javascript/i.test(path))) {
-                candidates.add(entry.name);
-            }
-        }
-        for (const candidate of candidates) {
-            let url;
-            try {
-                url = new URL(candidate, location.href);
-            }
-            catch {
-                continue;
-            }
-            if (url.origin !== origin)
-                continue;
-            url.hash = '';
-            if (assets.length >= limits.maxAssets) {
-                skippedOverAssetCap += 1;
-                continue;
-            }
-            try {
-                const response = await fetch(url, {
-                    cache: 'force-cache',
-                    credentials: 'same-origin',
-                });
-                const declared = Number(response.headers.get('content-length'));
-                if (Number.isFinite(declared) && declared > limits.maxAssetBytes) {
-                    skippedOverSize += 1;
-                    continue;
-                }
-                const type = response.headers.get('content-type') ?? '';
-                if (!response.ok || /text\/html/i.test(type)) {
-                    unreadable += 1;
-                    continue;
-                }
-                const text = await response.text();
-                if (!accept(text))
-                    continue;
-                assets.push({ kind: 'external', text, url: url.toString() });
-            }
-            catch {
-                unreadable += 1;
-            }
-        }
-        return {
-            assets,
-            skippedOverAssetCap,
-            skippedOverSize,
-            skippedOverTotal,
-            unreadable,
-        };
-    }, limits);
-}
-function skipIssue(collection, pageUrl) {
-    const reasons = [
-        [collection.skippedOverSize, 'larger than the per-asset limit'],
-        [collection.skippedOverAssetCap, 'past the asset count limit'],
-        [collection.skippedOverTotal, 'past the total size limit'],
-        [collection.unreadable, 'that could not be read'],
-    ];
-    const stated = reasons
-        .filter(([count]) => count > 0)
-        .map(([count, reason]) => `${count} ${reason}`);
-    if (stated.length === 0)
-        return [];
-    const skipped = reasons.reduce((sum, [count]) => sum + count, 0);
-    return [
-        {
-            ruleId: 'secrets-exposure-assets-skipped',
-            severity: 'minor',
-            message: `${skipped} same-origin ${skipped === 1 ? 'asset was' : 'assets were'} not scanned for credentials: ${stated.join('; ')}.`,
-            url: pageUrl,
-            helpUrl: secrets_exposure_HELP,
-        },
-    ];
-}
-function evaluateAssets(collection, pageUrl, rules) {
-    const issues = [];
-    for (const asset of collection.assets) {
-        for (const match of detectSecrets(asset.text, rules)) {
-            issues.push({
-                ruleId: `exposed-${match.ruleId}`,
-                severity: match.severity,
-                message: `${match.description} is served to every visitor (${match.redacted}${match.count > 1 ? `, ${match.count} distinct values` : ''}). Rotate it now; removing it from the bundle does not make it safe again.`,
-                url: asset.kind === 'inline' ? pageUrl : asset.url,
-                helpUrl: secrets_exposure_HELP,
-                ...(asset.kind === 'inline' ? { selector: asset.selector } : {}),
-            });
-        }
-    }
-    return [...issues, ...skipIssue(collection, pageUrl)];
-}
-const secretsExposureCheck = {
-    id: SECRETS_EXPOSURE_CHECK_ID,
-    async run(context) {
-        const config = context.config;
-        let collection;
-        // Lazy chunks and runtime config are requested after DOMContentLoaded;
-        // waiting for them costs no extra navigation.
-        await context.page
-            .waitForLoadState('networkidle', {
-            timeout: positive(config.settleTimeoutMs, DEFAULT_SETTLE_TIMEOUT_MS),
-        })
-            .catch(() => undefined);
-        try {
-            collection = await collectAssets(context, {
-                maxAssetBytes: positive(config.maxAssetBytes, DEFAULT_MAX_ASSET_BYTES),
-                maxAssets: positive(config.maxAssets, DEFAULT_MAX_ASSETS),
-                maxTotalBytes: positive(config.maxTotalBytes, DEFAULT_MAX_TOTAL_BYTES),
-            });
-        }
-        catch (error) {
-            throw new ScanInfrastructureError('secrets_scan_failed', 'Could not read the page assets for credential scanning', error);
-        }
-        return {
-            checkId: SECRETS_EXPOSURE_CHECK_ID,
-            issues: evaluateAssets(collection, context.url, config.rules),
-        };
-    },
-};
-//# sourceMappingURL=secrets-exposure.js.map
 ;// CONCATENATED MODULE: ../../node_modules/.pnpm/zod@4.4.3/node_modules/zod/v4/core/core.js
 var _a;
 /** A special constant with type `never` */
@@ -203100,7 +202146,7 @@ function strictObject(shape, params) {
         type: "object",
         shape,
         catchall: never(),
-        ...util.normalizeParams(params),
+        ...normalizeParams(params),
     });
 }
 // looseObject
@@ -203739,6 +202785,7 @@ const AUTH_ERROR_CODES = [
     'HOSTNAME_TAKEN',
     'HOSTNAME_RESERVED',
     'ACCOUNT_DELETION_BLOCKED',
+    'ORGANIZATION_SLUG_TAKEN',
 ];
 const AuthErrorCodeSchema = schemas_enum(AUTH_ERROR_CODES);
 const AuthErrorResponseSchema = object({
@@ -203793,13 +202840,27 @@ const UserSummarySchema = object({
     identities: array(AuthProviderSchema).min(1),
 })
     .strict();
+const ORGANIZATION_SLUG_MAX_LENGTH = 63;
+const OrganizationSlugSchema = schemas_string()
+    .min(1, 'Enter an organization slug.')
+    .max(ORGANIZATION_SLUG_MAX_LENGTH, 'Use at most 63 characters for the slug.')
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Use lowercase letters and numbers, separated by single hyphens.');
+const DeleteOrganizationRequestSchema = object({ confirmSlug: OrganizationSlugSchema })
+    .strict();
+function generateOrganizationSlug(name) {
+    return (name
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 55)
+        .replace(/-$/g, '') || 'organization');
+}
 const OrganizationSummarySchema = object({
     id: schemas_string().uuid(),
     name: schemas_string().trim().min(1).max(120),
-    slug: schemas_string()
-        .min(2)
-        .max(63)
-        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    slug: OrganizationSlugSchema,
     role: MembershipRoleSchema,
 })
     .strict();
@@ -203863,6 +202924,11 @@ const ProfileUpdateRequestSchema = object({ displayName: DisplayNameSchema })
     .strict();
 const CreateOrganizationRequestSchema = object({ name: schemas_string().trim().min(1).max(120) })
     .strict();
+const RenameOrganizationRequestSchema = CreateOrganizationRequestSchema.extend({
+    slug: schemas_string().trim().pipe(OrganizationSlugSchema),
+})
+    .partial()
+    .refine(({ name, slug }) => name !== undefined || slug !== undefined);
 const ActiveOrganizationRequestSchema = object({ organizationId: schemas_string().uuid() })
     .strict();
 const AcceptedResponseSchema = object({ status: literal('accepted') })
@@ -204441,7 +203507,7 @@ const PACKAGE_CATALOG = {
         customReportDomain: true,
     },
 };
-const BUNDLE_DETAILS = {
+const product_catalog_BUNDLE_DETAILS = {
     a11y: {
         name: 'Accessibility',
         summary: "axe-core's default rules: missing alt text, contrast, labels and landmarks.",
@@ -205206,9 +204272,15 @@ const ProjectListSchema = object({
     limit: object({
         maximum: schemas_number().int().positive().nullable(),
         used: schemas_number().int().nonnegative(),
+        reserved: schemas_number().int().nonnegative().optional(),
+        nextReleaseAt: schemas_string().datetime().nullable().optional(),
     })
         .strict(),
     projects: array(ProjectSummarySchema),
+})
+    .strict();
+const DeleteProjectResponseSchema = object({
+    slotReservedUntil: schemas_string().datetime(),
 })
     .strict();
 const CreateApiKeyRequestSchema = object({ name: schemas_string().trim().min(1).max(120) })
@@ -206283,6 +205355,23 @@ const CreateSeoSavedFilterRequestSchema = object({
 })
     .strict();
 //# sourceMappingURL=seo-audit-report.js.map
+;// CONCATENATED MODULE: ../shared/dist/loopback.js
+/**
+ * Whether a URL hostname names the machine it is resolved on: `localhost`, a
+ * `.localhost` name, `127.0.0.0/8`, or `::1`. Takes `URL.hostname`, so an IPv6
+ * address arrives in brackets.
+ *
+ * Only meaningful where the scan runs on the customer's own runner. A hosted
+ * scanner must never treat these as safe: there they name QualityGate itself.
+ */
+function isLoopbackHostname(hostname) {
+    const host = hostname.toLowerCase().replace(/\.$/, '');
+    return (host === 'localhost' ||
+        host.endsWith('.localhost') ||
+        host === '[::1]' ||
+        /^127(?:\.\d{1,3}){3}$/.test(host));
+}
+//# sourceMappingURL=loopback.js.map
 ;// CONCATENATED MODULE: ../shared/dist/index.js
 
 
@@ -206310,8 +205399,981 @@ const CreateSeoSavedFilterRequestSchema = object({
 
 
 
+
 //# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/security-headers.js
+
+
+const SECURITY_HEADERS_CHECK_ID = 'security-headers';
+// Response-header hygiene for the scanned document (QG-P1-FF2). Only headers a
+// browser acts on, read from the final response after redirects.
+//
+// Severity is calibrated on two axes: how cheap the fix is, and who controls it.
+// This product scans preview deployments, and a preview's edge often differs
+// from production, so headers set by the host rather than the application stay
+// below the default gate. Findings a framework config fixes in one line, with no
+// judgement call, are the ones allowed to fail a build.
+const security_headers_HELP = {
+    csp: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy',
+    frame: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options',
+    hsts: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security',
+    nosniff: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options',
+    permissions: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy',
+    referrer: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy',
+    transport: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers',
+};
+/** Six months, the floor every major preload list requires. */
+const MINIMUM_HSTS_MAX_AGE_SECONDS = 15_552_000;
+function directive(policy, name) {
+    return policy
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.toLowerCase().startsWith(`${name} `) ||
+        part.toLowerCase() === name);
+}
+/**
+ * Whether the page is served from this machine. A build scanned inside the CI
+ * job is reached this way, and its traffic never crosses a network, so plain
+ * HTTP there says nothing about how the site is deployed.
+ */
+function isLoopbackUrl(pageUrl) {
+    try {
+        return isLoopbackHostname(new URL(pageUrl).hostname);
+    }
+    catch {
+        return false;
+    }
+}
+function parseHstsMaxAge(value) {
+    const match = /(?:^|;|\s)max-age\s*=\s*"?(\d+)"?/i.exec(value);
+    if (match?.[1] === undefined)
+        return null;
+    const seconds = Number(match[1]);
+    return Number.isFinite(seconds) ? seconds : null;
+}
+/**
+ * Maps a header set onto issues. Pure and exported so the rule set can be tested
+ * without launching a browser.
+ */
+function evaluateSecurityHeaders(headers, pageUrl) {
+    const issues = [];
+    const add = (ruleId, severity, message, helpUrl) => {
+        issues.push({ ruleId, severity, message, url: pageUrl, helpUrl });
+    };
+    // Playwright lowercases header names; normalise anyway so a hand-built map
+    // behaves identically.
+    const header = (name) => {
+        const match = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
+        return match?.[1]?.trim();
+    };
+    const isHttps = pageUrl.toLowerCase().startsWith('https://');
+    const csp = header('content-security-policy');
+    // Transport is a property of the deployment, not of the build, so a server
+    // on this machine is not held to it. Every header below still applies: the
+    // application sets those, wherever it runs.
+    if (!isHttps && !isLoopbackUrl(pageUrl)) {
+        add('insecure-transport', 'serious', 'The page is served over plain HTTP, so every header below can be stripped in transit and its content can be modified.', security_headers_HELP.transport);
+    }
+    if (header('x-content-type-options')?.toLowerCase() !== 'nosniff') {
+        add('x-content-type-options-missing', 'serious', 'Responses do not set `X-Content-Type-Options: nosniff`, so a browser may execute a mistyped response as script.', security_headers_HELP.nosniff);
+    }
+    // Either header answers clickjacking. CSP `frame-ancestors` supersedes
+    // X-Frame-Options where both are present, so one of the two is enough.
+    const framingProtected = header('x-frame-options') !== undefined ||
+        (csp !== undefined && directive(csp, 'frame-ancestors') !== undefined);
+    if (!framingProtected) {
+        add('framing-protection-missing', 'serious', 'Neither `X-Frame-Options` nor a CSP `frame-ancestors` directive is set, so the page can be framed by any site.', security_headers_HELP.frame);
+    }
+    if (csp === undefined) {
+        add('content-security-policy-missing', 'moderate', 'No Content-Security-Policy is set. Adopting one is real work, so this is reported rather than gated.', security_headers_HELP.csp);
+    }
+    else {
+        const scriptSource = directive(csp, 'script-src') ?? directive(csp, 'default-src');
+        const unsafe = ["'unsafe-inline'", "'unsafe-eval'"].filter((token) => scriptSource?.toLowerCase().includes(token));
+        if (unsafe.length > 0) {
+            add('content-security-policy-unsafe', 'moderate', `The script source policy allows ${unsafe.join(' and ')}, which removes most of the protection the policy is there to provide.`, security_headers_HELP.csp);
+        }
+    }
+    // HSTS is usually configured at the edge rather than in the application, and
+    // preview hosts frequently differ from production, so it reports below the
+    // gate even though it matters.
+    if (isHttps) {
+        const hsts = header('strict-transport-security');
+        if (hsts === undefined) {
+            add('hsts-missing', 'moderate', 'No `Strict-Transport-Security` header, so a first visit can be downgraded to HTTP.', security_headers_HELP.hsts);
+        }
+        else {
+            const maxAge = parseHstsMaxAge(hsts);
+            if (maxAge === null) {
+                add('hsts-invalid', 'moderate', 'The `Strict-Transport-Security` header declares no readable `max-age`, so browsers ignore it.', security_headers_HELP.hsts);
+            }
+            else if (maxAge < MINIMUM_HSTS_MAX_AGE_SECONDS) {
+                add('hsts-max-age-short', 'moderate', `The HSTS \`max-age\` is ${maxAge} seconds, under the ${MINIMUM_HSTS_MAX_AGE_SECONDS} that preload lists require.`, security_headers_HELP.hsts);
+            }
+        }
+    }
+    if (header('referrer-policy') === undefined) {
+        add('referrer-policy-missing', 'moderate', 'No `Referrer-Policy` header, so full URLs of this site can leak to third parties in the Referer header.', security_headers_HELP.referrer);
+    }
+    if (header('permissions-policy') === undefined) {
+        add('permissions-policy-missing', 'minor', 'No `Permissions-Policy` header, so embedded content inherits access to features such as camera, microphone, and geolocation.', security_headers_HELP.permissions);
+    }
+    const poweredBy = header('x-powered-by');
+    if (poweredBy !== undefined) {
+        add('version-disclosure', 'minor', 'The `X-Powered-By` header advertises the server stack, which narrows the search for a working exploit.', security_headers_HELP.transport);
+    }
+    return issues;
+}
+const securityHeadersCheck = {
+    id: SECURITY_HEADERS_CHECK_ID,
+    run(context) {
+        // No response means no evidence. Reporting every header as missing would
+        // invent findings, so this fails the run instead (ADR-0010's instinct: no
+        // verdict is better than a wrong one).
+        if (context.responseHeaders === null) {
+            throw new ScanInfrastructureError('response_headers_unavailable', 'The navigation produced no response, so headers could not be read');
+        }
+        return Promise.resolve({
+            checkId: SECURITY_HEADERS_CHECK_ID,
+            issues: evaluateSecurityHeaders(context.responseHeaders, context.url),
+        });
+    },
+};
+//# sourceMappingURL=security-headers.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/performance.js
+
+const PERFORMANCE_CHECK_ID = 'performance';
+// Lighthouse performance (QG-P5-05). Performance was held back from earlier
+// phases because single Lighthouse runs are noisy in CI. Three mitigations make
+// the result stable enough to gate on:
+//
+// 1. Simulated throttling. Lighthouse records one unthrottled load and models
+//    the throttled timings, so runner CPU and network jitter move the score far
+//    less than devtools throttling does.
+// 2. Several runs, reduced to Lighthouse's own median run (closest to the
+//    median FCP and TTI), so one cold or unlucky load cannot decide the gate.
+// 3. A retry per run when Lighthouse reports a runtime error, so a transient
+//    failure costs one extra load instead of the whole scan.
+//
+// The score is Lighthouse's own 0-100 performance score, a natural score that
+// ADR-0008 allows a check to carry. The gate still counts issues: a metric
+// Lighthouse rates poor is serious, one that needs improvement is moderate, and
+// a failing insight is minor advice that never fails a build by default.
+const DEFAULT_PERFORMANCE_RUNS = 3;
+const MAX_PERFORMANCE_RUNS = 5;
+const ATTEMPTS_PER_RUN = 2;
+// A navigation budget per load. Lighthouse's own default is 45 seconds, and a
+// preview that has not settled by then is a result worth reporting as a failure
+// rather than waiting on.
+const MAX_WAIT_FOR_LOAD_MS = 45_000;
+/** Adapts the real Lighthouse modules, wherever they were loaded from. */
+function createLighthouseEngine(modules) {
+    return {
+        async run(url, { port, formFactor }) {
+            const runnerResult = await modules.lighthouse.default(url, {
+                port,
+                logLevel: 'error',
+                output: 'json',
+                onlyCategories: ['performance'],
+                throttlingMethod: 'simulate',
+                maxWaitForLoad: MAX_WAIT_FOR_LOAD_MS,
+                disableFullPageScreenshot: true,
+                locale: 'en-US',
+            }, formFactor === 'desktop' ? modules.lighthouse.desktopConfig : undefined);
+            if (runnerResult === undefined) {
+                throw new Error('Lighthouse returned no result');
+            }
+            return runnerResult.lhr;
+        },
+        medianRun(results) {
+            try {
+                return modules.medianRun.computeMedianRun([
+                    ...results,
+                ]);
+            }
+            catch {
+                // Lighthouse's median needs FCP and TTI on every run. Without them,
+                // fall back to the run with the median performance score.
+                return medianByScore(results);
+            }
+        },
+    };
+}
+function medianByScore(results) {
+    const sorted = [...results].sort((left, right) => (left.categories.performance?.score ?? 0) -
+        (right.categories.performance?.score ?? 0));
+    const median = sorted[Math.floor((sorted.length - 1) / 2)];
+    if (median === undefined)
+        throw new Error('No Lighthouse runs to reduce');
+    return median;
+}
+const loadInstalledLighthouse = async () => {
+    const [lighthouse, medianRun] = await Promise.all([
+        Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 543, 19)),
+        Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 663, 19)),
+    ]);
+    return createLighthouseEngine({
+        lighthouse: lighthouse,
+        medianRun: medianRun,
+    });
+};
+function readPerformanceConfig(config) {
+    const runs = config.runs ?? DEFAULT_PERFORMANCE_RUNS;
+    if (typeof runs !== 'number' ||
+        !Number.isInteger(runs) ||
+        runs < 1 ||
+        runs > MAX_PERFORMANCE_RUNS) {
+        throw new TypeError(`performance config.runs must be an integer from 1 to ${MAX_PERFORMANCE_RUNS}`);
+    }
+    const formFactor = config.formFactor ?? 'mobile';
+    if (formFactor !== 'mobile' && formFactor !== 'desktop') {
+        throw new TypeError("performance config.formFactor must be 'mobile' or 'desktop'");
+    }
+    return { runs, formFactor };
+}
+function metricSeverity(score) {
+    // Lighthouse's own bands: under 0.5 is red (poor), under 0.9 is orange.
+    if (score < 0.5)
+        return 'serious';
+    if (score < 0.9)
+        return 'moderate';
+    return null;
+}
+function learnMoreUrl(description) {
+    return /\((https:\/\/[^)\s]+)\)/.exec(description)?.[1];
+}
+const SCORED_INSIGHT_MODES = new Set(['binary', 'metricSavings', 'numeric']);
+/**
+ * Maps one Lighthouse result onto issues. Pure and exported so the mapping can
+ * be tested against recorded results without running Lighthouse.
+ *
+ * Rule ids are Lighthouse audit ids, which keeps fingerprints stable across
+ * runs even though the measured values in each message change every time.
+ */
+function evaluateLighthouseResult(result, pageUrl) {
+    const category = result.categories.performance;
+    if (category === undefined)
+        return [];
+    const metrics = [];
+    const insights = [];
+    for (const ref of category.auditRefs) {
+        const audit = result.audits[ref.id];
+        if (audit === undefined || audit.score === null)
+            continue;
+        const helpUrl = learnMoreUrl(audit.description);
+        if (ref.weight > 0) {
+            const severity = metricSeverity(audit.score);
+            if (severity === null)
+                continue;
+            const range = severity === 'serious' ? 'poor' : 'needs-improvement';
+            const value = audit.displayValue ? ` is ${audit.displayValue},` : ' is';
+            metrics.push({
+                ruleId: audit.id,
+                severity,
+                message: `${audit.title}${value} in Lighthouse's ${range} range.`,
+                url: pageUrl,
+                ...(helpUrl ? { helpUrl } : {}),
+            });
+            continue;
+        }
+        if (ref.group === 'insights' &&
+            SCORED_INSIGHT_MODES.has(audit.scoreDisplayMode) &&
+            audit.score < 0.9) {
+            const detail = audit.displayValue ? `: ${audit.displayValue}` : '';
+            insights.push({
+                ruleId: audit.id,
+                severity: 'minor',
+                message: `${audit.title}${detail}.`,
+                url: pageUrl,
+                ...(helpUrl ? { helpUrl } : {}),
+            });
+        }
+    }
+    return [...metrics, ...insights];
+}
+async function runWithRetry(engine, url, options) {
+    let failure;
+    for (let attempt = 0; attempt < ATTEMPTS_PER_RUN; attempt += 1) {
+        try {
+            const result = await engine.run(url, options);
+            if (result.runtimeError === undefined)
+                return { result };
+            failure = result.runtimeError.code;
+        }
+        catch (error) {
+            failure = error instanceof Error ? error.message : String(error);
+        }
+    }
+    return { failure: failure ?? 'unknown Lighthouse failure' };
+}
+function createPerformanceCheck(options = {}) {
+    const loadLighthouse = options.loadLighthouse ?? loadInstalledLighthouse;
+    return {
+        id: PERFORMANCE_CHECK_ID,
+        requiresDebuggingPort: true,
+        async run(context) {
+            const config = readPerformanceConfig(context.config);
+            if (context.debuggingPort === null) {
+                throw new Error('The performance check needs a browser DevTools port; the runner did not provide one');
+            }
+            // Lighthouse drives its own tab and can only add headers to every
+            // request it makes, which would hand the preview's credentials to each
+            // third-party origin the page loads.
+            if (context.authenticated === true) {
+                throw new ScanInfrastructureError('performance_analysis_failed', 'The perf bundle cannot scan a password-protected preview. Lighthouse would send the preview credentials to every third-party origin the page loads.');
+            }
+            let engine;
+            try {
+                engine = await loadLighthouse();
+            }
+            catch (error) {
+                throw new ScanInfrastructureError('performance_engine_unavailable', 'Lighthouse could not be loaded', error);
+            }
+            const runOptions = {
+                port: context.debuggingPort,
+                formFactor: config.formFactor,
+            };
+            const results = [];
+            const failures = [];
+            for (let run = 0; run < config.runs; run += 1) {
+                const outcome = await runWithRetry(engine, context.url, runOptions);
+                if (outcome.result) {
+                    await context.validateFinalUrl?.(outcome.result.finalDisplayedUrl);
+                    results.push(outcome.result);
+                }
+                else if (outcome.failure)
+                    failures.push(outcome.failure);
+            }
+            const median = results.length === 0
+                ? undefined
+                : results.length === 1
+                    ? results[0]
+                    : engine.medianRun(results);
+            const score = median?.categories.performance?.score;
+            if (median === undefined || score === null || score === undefined) {
+                throw new ScanInfrastructureError('performance_analysis_failed', `Lighthouse could not measure ${context.url}: ${failures.join(', ') || 'no performance score'}`);
+            }
+            return {
+                checkId: PERFORMANCE_CHECK_ID,
+                score: Math.round(score * 100),
+                issues: evaluateLighthouseResult(median, context.url),
+            };
+        },
+    };
+}
+const performanceCheck = createPerformanceCheck();
+//# sourceMappingURL=performance.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/gitleaks-rules.js
+// Ported from the gitleaks rule set, v8.30.1 (https://github.com/gitleaks/gitleaks).
+// Copyright (c) 2019 Zachary Rice. Licensed under the MIT License.
+// Regexes are kept in gitleaks' Go syntax and converted by compileRule. The
+// first capture group is taken as the secret, so groups that are not the secret
+// are non-capturing (microsoft-teams-webhook).
+const GITLEAKS_VERSION = 'v8.30.1';
+const GITLEAKS_RULES = [
+    {
+        description: 'Identified a Private Key, which may compromise cryptographic security and sensitive data encryption.',
+        id: 'private-key',
+        keywords: ['-----begin'],
+        regex: String.raw `(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----`,
+    },
+    {
+        description: 'Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data.',
+        entropy: 2,
+        id: 'stripe-access-token',
+        keywords: [
+            'sk_test',
+            'sk_live',
+            'sk_prod',
+            'rk_test',
+            'rk_live',
+            'rk_prod',
+        ],
+        regex: String.raw `\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Identified a pattern that may indicate AWS credentials, risking unauthorized cloud resource access and data breaches on AWS platforms.',
+        entropy: 3,
+        id: 'aws-access-token',
+        keywords: ['a3t', 'akia', 'asia', 'abia', 'acca'],
+        regex: String.raw `\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b`,
+    },
+    {
+        description: 'Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.',
+        entropy: 3,
+        id: 'github-pat',
+        keywords: ['ghp_'],
+        regex: String.raw `ghp_[0-9a-zA-Z]{36}`,
+    },
+    {
+        description: 'Found a GitHub Fine-Grained Personal Access Token, risking unauthorized repository access and code manipulation.',
+        entropy: 3,
+        id: 'github-fine-grained-pat',
+        keywords: ['github_pat_'],
+        regex: String.raw `github_pat_\w{82}`,
+    },
+    {
+        description: 'Discovered a GitHub OAuth Access Token, posing a risk of compromised GitHub account integrations and data leaks.',
+        entropy: 3,
+        id: 'github-oauth',
+        keywords: ['gho_'],
+        regex: String.raw `gho_[0-9a-zA-Z]{36}`,
+    },
+    {
+        description: 'Identified a GitHub App Token, which may compromise GitHub application integrations and source code security.',
+        entropy: 3,
+        id: 'github-app-token',
+        keywords: ['ghu_', 'ghs_'],
+        regex: String.raw `(?:ghu|ghs)_[0-9a-zA-Z]{36}`,
+    },
+    {
+        description: 'Detected a GitHub Refresh Token, which could allow prolonged unauthorized access to GitHub services.',
+        entropy: 3,
+        id: 'github-refresh-token',
+        keywords: ['ghr_'],
+        regex: String.raw `ghr_[0-9a-zA-Z]{36}`,
+    },
+    {
+        description: 'Identified a GitLab Personal Access Token, risking unauthorized access to GitLab repositories and codebase exposure.',
+        entropy: 3,
+        id: 'gitlab-pat',
+        keywords: ['glpat-'],
+        regex: String.raw `glpat-[\w-]{20}`,
+    },
+    {
+        description: 'Identified a GitLab Personal Access Token (routable), risking unauthorized access to GitLab repositories and codebase exposure.',
+        entropy: 4,
+        id: 'gitlab-pat-routable',
+        keywords: ['glpat-'],
+        regex: String.raw `\bglpat-[0-9a-zA-Z_-]{27,300}\.[0-9a-z]{2}[0-9a-z]{7}\b`,
+    },
+    {
+        description: 'Identified a Slack Bot token, which may compromise bot integrations and communication channel security.',
+        entropy: 3,
+        id: 'slack-bot-token',
+        keywords: ['xoxb'],
+        regex: String.raw `xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*`,
+    },
+    {
+        description: 'Found a Slack User token, posing a risk of unauthorized user impersonation and data access within Slack workspaces.',
+        entropy: 2,
+        id: 'slack-user-token',
+        keywords: ['xoxp-', 'xoxe-'],
+        regex: String.raw `xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}`,
+    },
+    {
+        description: 'Detected a Slack App-level token, risking unauthorized access to Slack applications and workspace data.',
+        entropy: 2,
+        id: 'slack-app-token',
+        keywords: ['xapp'],
+        regex: String.raw `(?i)xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+`,
+    },
+    {
+        description: 'Discovered a Slack Webhook, which could lead to unauthorized message posting and data leakage in Slack channels.',
+        id: 'slack-webhook-url',
+        keywords: ['hooks.slack.com'],
+        regex: String.raw `(?:https?://)?hooks.slack.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}`,
+    },
+    {
+        description: 'Detected a SendGrid API token, posing a risk of unauthorized email service operations and data exposure.',
+        entropy: 2,
+        id: 'sendgrid-api-token',
+        keywords: ['sg.'],
+        regex: String.raw `\b(SG\.(?i)[a-z0-9=_\-\.]{66})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Found an OpenAI API Key, posing a risk of unauthorized access to AI services and data manipulation.',
+        entropy: 3,
+        id: 'openai-api-key',
+        keywords: ['t3blbkfj'],
+        regex: String.raw `\b(sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})\b|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Identified an Anthropic API Key, which may compromise AI assistant integrations and expose sensitive data to unauthorized access.',
+        id: 'anthropic-api-key',
+        keywords: ['sk-ant-api03'],
+        regex: String.raw `\b(sk-ant-api03-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Detected an Anthropic Admin API Key, risking unauthorized access to administrative functions and sensitive AI model configurations.',
+        id: 'anthropic-admin-api-key',
+        keywords: ['sk-ant-admin01'],
+        regex: String.raw `\b(sk-ant-admin01-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Uncovered an npm access token, potentially compromising package management and code repository access.',
+        entropy: 2,
+        id: 'npm-access-token',
+        keywords: ['npm_'],
+        regex: String.raw `(?i)\b(npm_[a-z0-9]{36})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Discovered a PyPI upload token, potentially compromising Python package distribution and repository integrity.',
+        entropy: 3,
+        id: 'pypi-upload-token',
+        keywords: ['pypi-ageichlwas5vcmc'],
+        regex: String.raw `pypi-AgEIcHlwaS5vcmc[\w-]{50,1000}`,
+    },
+    {
+        description: 'Uncovered a Shopify access token, which could lead to unauthorized e-commerce platform access and data breaches.',
+        entropy: 2,
+        id: 'shopify-access-token',
+        keywords: ['shpat_'],
+        regex: String.raw `shpat_[a-fA-F0-9]{32}`,
+    },
+    {
+        description: 'Detected a Shopify custom access token, potentially compromising custom app integrations and e-commerce data security.',
+        entropy: 2,
+        id: 'shopify-custom-access-token',
+        keywords: ['shpca_'],
+        regex: String.raw `shpca_[a-fA-F0-9]{32}`,
+    },
+    {
+        description: 'Identified a Shopify private app access token, risking unauthorized access to private app data and store operations.',
+        entropy: 2,
+        id: 'shopify-private-app-access-token',
+        keywords: ['shppa_'],
+        regex: String.raw `shppa_[a-fA-F0-9]{32}`,
+    },
+    {
+        description: 'Found a Shopify shared secret, posing a risk to application authentication and e-commerce platform security.',
+        entropy: 2,
+        id: 'shopify-shared-secret',
+        keywords: ['shpss_'],
+        regex: String.raw `shpss_[a-fA-F0-9]{32}`,
+    },
+    {
+        description: 'Found a Mailgun private API token, risking unauthorized email service operations and data breaches.',
+        id: 'mailgun-private-api-token',
+        keywords: ['mailgun'],
+        regex: String.raw `(?i)[\w.-]{0,50}?(?:mailgun)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}(key-[a-f0-9]{32})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Discovered a DigitalOcean Personal Access Token, posing a threat to cloud infrastructure security and data privacy.',
+        entropy: 3,
+        id: 'digitalocean-pat',
+        keywords: ['dop_v1_'],
+        regex: String.raw `\b(dop_v1_[a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Found a DigitalOcean OAuth Access Token, risking unauthorized cloud resource access and data compromise.',
+        entropy: 3,
+        id: 'digitalocean-access-token',
+        keywords: ['doo_v1_'],
+        regex: String.raw `\b(doo_v1_[a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Discovered a Hugging Face Access token, which could lead to unauthorized access to AI models and sensitive data.',
+        entropy: 2,
+        id: 'huggingface-access-token',
+        keywords: ['hf_'],
+        regex: String.raw `\b(hf_(?i:[a-z]{34}))(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Detected a Linear API Token, posing a risk to project management tools and sensitive task data.',
+        entropy: 2,
+        id: 'linear-api-key',
+        keywords: ['lin_api_'],
+        regex: String.raw `lin_api_(?i)[a-z0-9]{40}`,
+    },
+    {
+        description: 'Notion API token',
+        entropy: 4,
+        id: 'notion-api-token',
+        keywords: ['ntn_'],
+        regex: String.raw `\b(ntn_[0-9]{11}[A-Za-z0-9]{32}[A-Za-z0-9]{3})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Discovered a Doppler API token, posing a risk to environment and secrets management security.',
+        entropy: 2,
+        id: 'doppler-api-token',
+        keywords: ['dp.pt.'],
+        regex: String.raw `dp\.pt\.(?i)[a-z0-9]{43}`,
+    },
+    {
+        description: 'Uncovered a Postman API token, potentially compromising API testing and development workflows.',
+        entropy: 3,
+        id: 'postman-api-token',
+        keywords: ['pmak-'],
+        regex: String.raw `\b(PMAK-(?i)[a-f0-9]{24}\-[a-f0-9]{34})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Detected a Square Access Token, risking unauthorized payment processing and financial transaction exposure.',
+        entropy: 2,
+        id: 'square-access-token',
+        keywords: ['sq0atp-', 'eaaa'],
+        regex: String.raw `\b((?:EAAA|sq0atp-)[\w-]{22,60})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Uncovered a Databricks API token, which may compromise big data analytics platforms and sensitive data processing.',
+        entropy: 3,
+        id: 'databricks-api-token',
+        keywords: ['dapi'],
+        regex: String.raw `\b(dapi[a-f0-9]{32}(?:-\d)?)(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Identified a PlanetScale API token, potentially compromising database management and operations.',
+        entropy: 3,
+        id: 'planetscale-api-token',
+        keywords: ['pscale_tkn_'],
+        regex: String.raw `\b(pscale_tkn_(?i)[\w=\.-]{32,64})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Found a Pulumi API token, posing a risk to infrastructure as code services and cloud resource management.',
+        entropy: 2,
+        id: 'pulumi-api-token',
+        keywords: ['pul-'],
+        regex: String.raw `\b(pul-[a-f0-9]{40})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Uncovered a HashiCorp Terraform user/org API token, which may lead to unauthorized infrastructure management and security breaches.',
+        entropy: 3.5,
+        id: 'hashicorp-tf-api-token',
+        keywords: ['atlasv1'],
+        regex: String.raw `(?i)[a-z0-9]{14}\.(?-i:atlasv1)\.[a-z0-9\-_=]{60,70}`,
+    },
+    {
+        description: 'Detected a Perplexity API key, which could lead to unauthorized access to Perplexity AI services and data exposure.',
+        entropy: 4,
+        id: 'perplexity-api-key',
+        keywords: ['pplx-'],
+        regex: String.raw `\b(pplx-[a-zA-Z0-9]{48})(?:[\x60'"\s;]|\\[nr]|$|\b)`,
+    },
+    {
+        description: 'Found a Sentry.io User Token, risking unauthorized access to error tracking services and sensitive application data.',
+        entropy: 3.5,
+        id: 'sentry-user-token',
+        keywords: ['sntryu_'],
+        regex: String.raw `\b(sntryu_[a-f0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Found a Sentry.io Organization Token, risking unauthorized access to error tracking services and sensitive application data.',
+        entropy: 4.5,
+        id: 'sentry-org-token',
+        keywords: ['sntrys_eyjpyxqio'],
+        regex: String.raw `\bsntrys_eyJpYXQiO[a-zA-Z0-9+/]{10,200}(?:LCJyZWdpb25fdXJs|InJlZ2lvbl91cmwi|cmVnaW9uX3VybCI6)[a-zA-Z0-9+/]{10,200}={0,2}_[a-zA-Z0-9+/]{43}(?:[^a-zA-Z0-9+/]|\z)`,
+    },
+    {
+        description: 'Discovered a Grafana service account token, posing a risk of compromised monitoring services and data integrity.',
+        entropy: 3,
+        id: 'grafana-service-account-token',
+        keywords: ['glsa_'],
+        regex: String.raw `(?i)\b(glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Uncovered a Fly.io API key',
+        entropy: 4,
+        id: 'flyio-access-token',
+        keywords: ['fo1_', 'fm1', 'fm2_'],
+        regex: String.raw `\b((?:fo1_[\w-]{43}|fm1[ar]_[a-zA-Z0-9+\/]{100,}={0,3}|fm2_[a-zA-Z0-9+\/]{100,}={0,3}))(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Discovered a potential Age encryption tool secret key, risking data decryption and unauthorized access to sensitive information.',
+        id: 'age-secret-key',
+        keywords: ['age-secret-key-1'],
+        regex: String.raw `AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}`,
+    },
+    {
+        description: 'Uncovered a possible 1Password service account token, potentially compromising access to secrets in vaults.',
+        entropy: 4,
+        id: '1password-service-account-token',
+        keywords: ['ops_'],
+        regex: String.raw `ops_eyJ[a-zA-Z0-9+/]{250,}={0,3}`,
+    },
+    {
+        description: 'Uncovered a Microsoft Teams Webhook, which could lead to unauthorized access to team collaboration tools and data leaks.',
+        id: 'microsoft-teams-webhook',
+        keywords: ['webhook.office.com', 'webhookb2', 'incomingwebhook'],
+        regex: String.raw `https://[a-z0-9]+\.webhook\.office\.com/webhookb2/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}@[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}/IncomingWebhook/[a-z0-9]{32}/[a-z0-9]{8}-(?:[a-z0-9]{4}-){3}[a-z0-9]{12}`,
+    },
+    {
+        description: 'Detected a Heroku API Key, potentially compromising cloud application deployments and operational security.',
+        entropy: 4,
+        id: 'heroku-api-key-v2',
+        keywords: ['hrku-aa'],
+        regex: String.raw `\b((HRKU-AA[0-9a-zA-Z_-]{58}))(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+    {
+        description: 'Detected a Cloudflare Origin CA Key, potentially compromising cloud application deployments and operational security.',
+        entropy: 2,
+        id: 'cloudflare-origin-ca-key',
+        keywords: ['cloudflare', 'v1.0-'],
+        regex: String.raw `\b(v1\.0-[a-f0-9]{24}-[a-f0-9]{146})(?:[\x60'"\s;]|\\[nr]|$)`,
+    },
+];
+//# sourceMappingURL=gitleaks-rules.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/secret-detection.js
+
+const REDACTED_PREFIX_CHARS = 4;
+function compileRule(rule) {
+    let source = rule.regex;
+    let caseInsensitive = false;
+    if (/\(\?i\)/.test(source)) {
+        caseInsensitive = true;
+        source = source.replaceAll('(?i)', '');
+    }
+    source = source
+        .replace(/\(\?-i:([^)]*)\)/g, '(?:$1)')
+        .replace(/\(\?i:([^)]*)\)/g, (_match, body) => body.replaceAll('a-z', 'a-zA-Z'))
+        .replaceAll('\\z', '$');
+    return {
+        description: rule.description,
+        entropy: rule.entropy,
+        id: rule.id,
+        keywords: rule.keywords.map((keyword) => keyword.toLowerCase()),
+        pattern: new RegExp(source, caseInsensitive ? 'gi' : 'g'),
+    };
+}
+const SECRET_RULES = GITLEAKS_RULES.map(compileRule);
+function shannonEntropy(value) {
+    const counts = new Map();
+    for (const character of value) {
+        counts.set(character, (counts.get(character) ?? 0) + 1);
+    }
+    let entropy = 0;
+    for (const count of counts.values()) {
+        const probability = count / value.length;
+        entropy -= probability * Math.log2(probability);
+    }
+    return entropy;
+}
+function redactSecret(secret) {
+    return `${secret.slice(0, REDACTED_PREFIX_CHARS)}… (${secret.length} chars)`;
+}
+function severityFor(ruleId, secret) {
+    return ruleId === 'stripe-access-token' && /^(sk|rk)_test_/.test(secret)
+        ? 'serious'
+        : 'critical';
+}
+function allowed(ruleId, secret) {
+    return ruleId === 'aws-access-token' && /EXAMPLE$/.test(secret);
+}
+function detectSecrets(text, rules = SECRET_RULES) {
+    const lower = text.toLowerCase();
+    const matches = [];
+    for (const rule of rules) {
+        if (rule.keywords.length > 0 &&
+            !rule.keywords.some((keyword) => lower.includes(keyword))) {
+            continue;
+        }
+        const secrets = new Set();
+        for (const match of text.matchAll(rule.pattern)) {
+            const secret = match[1] ?? match[0];
+            if (rule.entropy !== undefined && shannonEntropy(secret) < rule.entropy) {
+                continue;
+            }
+            if (allowed(rule.id, secret))
+                continue;
+            secrets.add(secret);
+        }
+        if (secrets.size === 0)
+            continue;
+        const [first] = secrets;
+        const severity = [...secrets].some((secret) => severityFor(rule.id, secret) === 'critical')
+            ? 'critical'
+            : 'serious';
+        matches.push({
+            count: secrets.size,
+            description: rule.description,
+            redacted: redactSecret(first),
+            ruleId: rule.id,
+            severity,
+        });
+    }
+    return matches;
+}
+//# sourceMappingURL=secret-detection.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/secrets-exposure.js
+
+
+const SECRETS_EXPOSURE_CHECK_ID = 'secrets-exposure';
+const secrets_exposure_HELP = 'https://owasp.org/www-project-top-ten/2017/A3_2017-Sensitive_Data_Exposure';
+const DEFAULT_MAX_ASSET_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_ASSETS = 40;
+const DEFAULT_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
+const DEFAULT_SETTLE_TIMEOUT_MS = 5_000;
+function positive(value, fallback) {
+    return Number.isInteger(value) && value > 0
+        ? value
+        : fallback;
+}
+async function collectAssets(context, limits) {
+    return context.page.evaluate(async (limits) => {
+        const origin = location.origin;
+        const assets = [];
+        let total = 0;
+        let skippedOverSize = 0;
+        let skippedOverTotal = 0;
+        let skippedOverAssetCap = 0;
+        let unreadable = 0;
+        const accept = (text) => {
+            if (text.length > limits.maxAssetBytes) {
+                skippedOverSize += 1;
+                return false;
+            }
+            if (assets.length >= limits.maxAssets) {
+                skippedOverAssetCap += 1;
+                return false;
+            }
+            if (total + text.length > limits.maxTotalBytes) {
+                skippedOverTotal += 1;
+                return false;
+            }
+            total += text.length;
+            return true;
+        };
+        const selectorFor = (element) => {
+            const parts = [];
+            for (let node = element; node !== null && node !== document.documentElement; node = node.parentElement) {
+                const sameType = [...(node.parentElement?.children ?? [])].filter((sibling) => sibling.localName === node.localName);
+                parts.unshift(sameType.length > 1
+                    ? `${node.localName}:nth-of-type(${sameType.indexOf(node) + 1})`
+                    : node.localName);
+            }
+            return parts.join(' > ');
+        };
+        const scripts = [...document.querySelectorAll('script')];
+        for (const script of scripts) {
+            if (script.src)
+                continue;
+            const text = script.textContent ?? '';
+            if (text.trim() === '' || !accept(text))
+                continue;
+            assets.push({ kind: 'inline', selector: selectorFor(script), text });
+        }
+        const candidates = new Set();
+        for (const script of scripts) {
+            if (script.src)
+                candidates.add(script.src);
+        }
+        for (const entry of performance.getEntriesByType('resource')) {
+            const path = new URL(entry.name).pathname;
+            if (entry.initiatorType === 'script' ||
+                /\.(m?js|json)$/i.test(path) ||
+                ((entry.initiatorType === 'fetch' ||
+                    entry.initiatorType === 'xmlhttprequest') &&
+                    /json|javascript/i.test(path))) {
+                candidates.add(entry.name);
+            }
+        }
+        for (const candidate of candidates) {
+            let url;
+            try {
+                url = new URL(candidate, location.href);
+            }
+            catch {
+                continue;
+            }
+            if (url.origin !== origin)
+                continue;
+            url.hash = '';
+            if (assets.length >= limits.maxAssets) {
+                skippedOverAssetCap += 1;
+                continue;
+            }
+            try {
+                const response = await fetch(url, {
+                    cache: 'force-cache',
+                    credentials: 'same-origin',
+                });
+                const declared = Number(response.headers.get('content-length'));
+                if (Number.isFinite(declared) && declared > limits.maxAssetBytes) {
+                    skippedOverSize += 1;
+                    continue;
+                }
+                const type = response.headers.get('content-type') ?? '';
+                if (!response.ok || /text\/html/i.test(type)) {
+                    unreadable += 1;
+                    continue;
+                }
+                const text = await response.text();
+                if (!accept(text))
+                    continue;
+                assets.push({ kind: 'external', text, url: url.toString() });
+            }
+            catch {
+                unreadable += 1;
+            }
+        }
+        return {
+            assets,
+            skippedOverAssetCap,
+            skippedOverSize,
+            skippedOverTotal,
+            unreadable,
+        };
+    }, limits);
+}
+function skipIssue(collection, pageUrl) {
+    const reasons = [
+        [collection.skippedOverSize, 'larger than the per-asset limit'],
+        [collection.skippedOverAssetCap, 'past the asset count limit'],
+        [collection.skippedOverTotal, 'past the total size limit'],
+        [collection.unreadable, 'that could not be read'],
+    ];
+    const stated = reasons
+        .filter(([count]) => count > 0)
+        .map(([count, reason]) => `${count} ${reason}`);
+    if (stated.length === 0)
+        return [];
+    const skipped = reasons.reduce((sum, [count]) => sum + count, 0);
+    return [
+        {
+            ruleId: 'secrets-exposure-assets-skipped',
+            severity: 'minor',
+            message: `${skipped} same-origin ${skipped === 1 ? 'asset was' : 'assets were'} not scanned for credentials: ${stated.join('; ')}.`,
+            url: pageUrl,
+            helpUrl: secrets_exposure_HELP,
+        },
+    ];
+}
+function evaluateAssets(collection, pageUrl, rules) {
+    const issues = [];
+    for (const asset of collection.assets) {
+        for (const match of detectSecrets(asset.text, rules)) {
+            issues.push({
+                ruleId: `exposed-${match.ruleId}`,
+                severity: match.severity,
+                message: `${match.description} is served to every visitor (${match.redacted}${match.count > 1 ? `, ${match.count} distinct values` : ''}). Rotate it now; removing it from the bundle does not make it safe again.`,
+                url: asset.kind === 'inline' ? pageUrl : asset.url,
+                helpUrl: secrets_exposure_HELP,
+                ...(asset.kind === 'inline' ? { selector: asset.selector } : {}),
+            });
+        }
+    }
+    return [...issues, ...skipIssue(collection, pageUrl)];
+}
+const secretsExposureCheck = {
+    id: SECRETS_EXPOSURE_CHECK_ID,
+    async run(context) {
+        const config = context.config;
+        let collection;
+        // Lazy chunks and runtime config are requested after DOMContentLoaded;
+        // waiting for them costs no extra navigation.
+        await context.page
+            .waitForLoadState('networkidle', {
+            timeout: positive(config.settleTimeoutMs, DEFAULT_SETTLE_TIMEOUT_MS),
+        })
+            .catch(() => undefined);
+        try {
+            collection = await collectAssets(context, {
+                maxAssetBytes: positive(config.maxAssetBytes, DEFAULT_MAX_ASSET_BYTES),
+                maxAssets: positive(config.maxAssets, DEFAULT_MAX_ASSETS),
+                maxTotalBytes: positive(config.maxTotalBytes, DEFAULT_MAX_TOTAL_BYTES),
+            });
+        }
+        catch (error) {
+            throw new ScanInfrastructureError('secrets_scan_failed', 'Could not read the page assets for credential scanning', error);
+        }
+        return {
+            checkId: SECRETS_EXPOSURE_CHECK_ID,
+            issues: evaluateAssets(collection, context.url, config.rules),
+        };
+    },
+};
+//# sourceMappingURL=secrets-exposure.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/html-report.js
+
 
 const HTML_REPORT_DEFAULT_THEME = {
     brandName: 'QualityGate',
@@ -206410,6 +206472,17 @@ function pdfSummaryResults(bundle, results) {
 function metadataItem(label, value) {
     return `<div><dt>${label}</dt><dd>${escapeText(value)}</dd></div>`;
 }
+function reportTime(value) {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp))
+        return metadataItem('Run time', value);
+    const displayTime = new Intl.DateTimeFormat('en-GB', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'UTC',
+    }).format(timestamp);
+    return `<div><dt>Run time</dt><dd><time datetime="${escapeAttribute(value)}">${escapeText(displayTime)} UTC</time></dd></div>`;
+}
 function findingHtml(result, analysis) {
     const groups = SEVERITIES.flatMap((severity) => {
         const issues = result.issues.filter((issue) => issue.severity === severity);
@@ -206471,8 +206544,41 @@ function brandHtml(theme, whiteLabel) {
         : `<img class="brand-logo" src="${escapeAttribute(theme.logoUrl)}" alt="${escapeAttribute(theme.brandName)} logo">`;
     return `${mark}<span>${escapeText(theme.brandName)}</span>`;
 }
+function renderReportUnavailable() {
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Report not found · QualityGate</title>
+<style>
+* { box-sizing: border-box; }
+html { color-scheme: light; background: #f5f7fb; color: #12243a; font: 1rem/1.6 Inter, ui-sans-serif, system-ui, sans-serif; }
+body { margin: 0; }
+.brand { display: flex; align-items: center; gap: .65rem; font-size: 1.125rem; font-weight: 750; }
+.brand-mark { width: 2rem; flex: none; }
+.brand-mark path { fill: none; stroke-width: 3; stroke-linecap: square; }
+${CLIENT_REPORT_MASTHEAD_STYLES}
+.unavailable { width: min(100% - 2.5rem, 72rem); margin-inline: auto; padding-block: clamp(2rem, 8vw, 6rem); }
+.unavailable h1 { margin: 0; font: 700 clamp(2rem, 5vw, 3.5rem)/1.12 Geist, ui-sans-serif, system-ui, sans-serif; letter-spacing: -.035em; }
+.unavailable p { max-width: 52ch; margin: 1rem 0 0; color: #52647b; }
+.unavailable .next-step { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #d9e1eb; color: #12243a; }
+</style>
+</head>
+<body>
+<header class="client-masthead"><div class="brand">${brandHtml(HTML_REPORT_DEFAULT_THEME, false)}</div></header>
+<main class="unavailable">
+<h1>Report not found</h1>
+<p>This link may have expired, been revoked, or been copied incorrectly.</p>
+<p class="next-step">Ask the person who shared the report for a new link.</p>
+</main>
+</body>
+</html>`;
+}
 function renderHtmlReport(input, theme = HTML_REPORT_DEFAULT_THEME, options = {}) {
     const checkedTheme = parseTheme(theme);
+    const sharedView = options.whiteLabel === true && options.profile !== 'pdf-summary';
     const runUrl = html_report_httpUrl(input.run.url, 'run.url');
     const decision = input.summary.passed ? 'Gate passed' : 'Gate failed';
     const delta = input.scoreDelta === null
@@ -206499,6 +206605,15 @@ function renderHtmlReport(input, theme = HTML_REPORT_DEFAULT_THEME, options = {}
         : renderedResults
             .map((result) => findingHtml(result, input.analysis))
             .join('\n');
+    const brand = `<div class="brand">${brandHtml(checkedTheme, options.whiteLabel === true)}</div>`;
+    const title = `<h1>${escapeText(input.project.repo)}</h1>
+<p class="target">Target: <a href="${escapeAttribute(runUrl)}" target="_blank" rel="noopener noreferrer">${escapeText(runUrl)}</a></p>`;
+    const download = options.pdfHref === undefined
+        ? ''
+        : `<p class="download"><a href="${escapeAttribute(options.pdfHref)}" download>Download PDF</a></p>\n`;
+    const scoreDelta = `<p class="delta">${delta}</p>`;
+    const scorePanel = `<div${sharedView ? ' class="score-panel"' : ''}><span class="score-label">Quality score</span><p class="score">${input.score}<small>/100</small></p>${sharedView ? scoreDelta : ''}</div>`;
+    const gateDecision = `<div class="decision"><h2 id="decision-heading">${decision}</h2>${sharedView ? '' : scoreDelta}${input.summary.failReason === undefined ? '' : `<p>${escapeText(input.summary.failReason)}</p>`}</div>`;
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -206584,22 +206699,18 @@ dd { margin: .25rem 0 0; overflow-wrap: anywhere; }
   .finding { break-inside: avoid; }
   a[href^="http"]::after { content: " (" attr(href) ")"; font-size: .85em; font-weight: 400; overflow-wrap: anywhere; }
 }
-</style>
+${sharedView ? CLIENT_REPORT_STYLES : ''}</style>
 </head>
 <body>
-<div class="report-shell">
+${sharedView ? `<div class="client-masthead">${brand}</div>\n` : ''}<div class="report-shell">
 <header class="report-header">
-<div class="brand">${brandHtml(checkedTheme, options.whiteLabel === true)}</div>
-<h1>${escapeText(input.project.repo)}</h1>
-<p class="target">Target: <a href="${escapeAttribute(runUrl)}" target="_blank" rel="noopener noreferrer">${escapeText(runUrl)}</a></p>
-${options.pdfHref === undefined ? '' : `<p class="download"><a href="${escapeAttribute(options.pdfHref)}" download>Download PDF</a></p>\n`}<dl class="metadata">
-${metadataItem('Run time', input.run.createdAt)}${metadataItem('Default branch', input.project.defaultBranch)}${metadataItem('Bundle', input.bundle)}${optionalMetadata}
+${sharedView ? `<div class="report-heading"><div>${title}</div>${download}</div>\n` : `${brand}\n${title}\n${download}`}<dl class="metadata">
+${sharedView ? reportTime(input.run.createdAt) : metadataItem('Run time', input.run.createdAt)}${metadataItem('Default branch', input.project.defaultBranch)}${metadataItem('Bundle', sharedView ? BUNDLE_DETAILS[input.bundle].name : input.bundle)}${optionalMetadata}
 </dl>
 </header>
 <main class="report-main">
-<section class="summary" aria-labelledby="decision-heading">
-<div><span class="score-label">Quality score</span><p class="score">${input.score}<small>/100</small></p></div>
-<div class="decision"><h2 id="decision-heading">${decision}</h2><p class="delta">${delta}</p>${input.summary.failReason === undefined ? '' : `<p>${escapeText(input.summary.failReason)}</p>`}</div>
+<section class="summary"${sharedView ? ` data-result="${input.summary.passed ? 'passed' : 'failed'}"` : ''} aria-labelledby="decision-heading">
+${sharedView ? `${gateDecision}\n${scorePanel}` : `${scorePanel}\n${gateDecision}`}
 </section>
 <section class="severity-overview" aria-labelledby="severity-heading">
 <h2 id="severity-heading">Severity overview</h2>
@@ -206832,6 +206943,15 @@ const GEO_DISCLAIMER = 'GEO checks read what this site publishes to AI crawlers 
 const SEO_DEEP_DISCLAIMER = 'Deep SEO crawls a bounded slice of the site from this page; pages beyond the crawl limit are not checked.';
 const FULL_DISCLAIMER = 'Automated checks read one page for accessibility, SEO, response headers, and links. They are a starting point, not a legal conformance assessment, a ranking prediction, or a penetration test.';
 const DEFAULT_TOP_ISSUE_LIMIT = 3;
+/**
+ * How many findings "All findings" lists. A pull request comment is capped at
+ * 65,536 characters by GitHub, so it lists fewer than the job summary does, and
+ * says where the rest are.
+ */
+const DEFAULT_COMMENT_FINDING_LIMIT = 50;
+const DEFAULT_SUMMARY_FINDING_LIMIT = 500;
+/** A message is an explanation, not a document; longer ones are cut. */
+const MESSAGE_LENGTH_LIMIT = 300;
 const BUNDLE_PRESENTATION = {
     a11y: {
         disclaimer: ACCESSIBILITY_DISCLAIMER,
@@ -206966,6 +207086,38 @@ function trustedHelpUrl(value) {
         return undefined;
     }
 }
+// A message arrives from the runner and is posted under QualityGate's name, so
+// it must stay plain text: Markdown syntax is escaped, and a zero-width space
+// breaks what escaping does not reliably stop on GitHub, namely `@` mentions,
+// `#` references, and bare URLs that would autolink.
+const MARKDOWN_SPECIAL = /[\\`*_{}[\]()<>+!|~-]/g;
+function plainText(value) {
+    return value
+        .replace(MARKDOWN_SPECIAL, (character) => `\\${character}`)
+        .replace(/[@#]/g, (character) => `${character}\u200b`)
+        .replace(/(https?):\/\//gi, '$1:\u200b//')
+        .replace(/\bwww\./gi, 'www\u200b.');
+}
+/**
+ * A finding's message as one safe line. Backtick spans in the engine's messages
+ * name the exact fix (`X-Content-Type-Options: nosniff`), so they stay code;
+ * everything else is escaped so nothing in it links, mentions, or renders HTML.
+ */
+function formatMessage(message) {
+    let text = scrubText(message).replace(/\s+/g, ' ').trim();
+    if (text.length > MESSAGE_LENGTH_LIMIT) {
+        text = `${text.slice(0, MESSAGE_LENGTH_LIMIT - 1).trimEnd()}…`;
+    }
+    const parts = text.split('`');
+    // An odd number of parts means every backtick has a partner.
+    if (parts.length % 2 === 0)
+        return plainText(text);
+    return parts
+        .map((part, index) => index % 2 === 1 && part.trim() !== ''
+        ? inlineCode(part)
+        : plainText(part))
+        .join('');
+}
 function formatIssue({ checkId, issue }, attributed) {
     const safeIssue = scrubIssue(issue);
     const selector = safeIssue.selector === undefined
@@ -206976,18 +207128,51 @@ function formatIssue({ checkId, issue }, attributed) {
     // Which check found it only matters when more than one check ran; on a
     // single-check bundle the label would repeat the bundle line above it.
     const source = attributed ? ` _(${render_checkLabel(checkId)})_` : '';
-    return `- **[${safeIssue.severity}] ${safeRuleId(safeIssue.ruleId)}** — ${selector}${source}${help}`;
+    const message = formatMessage(safeIssue.message);
+    return `- **[${safeIssue.severity}] ${safeRuleId(safeIssue.ruleId)}** — ${selector}${source}${help}${message === '' ? '' : `\n  ${message}`}`;
+}
+function sortedBySeverity(issues) {
+    return issues
+        .map((entry, index) => ({ entry, index }))
+        .sort((left, right) => severityRank[left.entry.issue.severity] -
+        severityRank[right.entry.issue.severity] || left.index - right.index)
+        .map(({ entry }) => entry);
+}
+/**
+ * Every finding, grouped by the check that reported it, worst first. The
+ * prioritized list answers "what first"; this answers "what else", which a
+ * reader otherwise has no way to see.
+ */
+function allFindings(results, limit, multiCheck, truncatedHint) {
+    const lines = ['', '### All findings'];
+    let shown = 0;
+    let total = 0;
+    for (const result of results) {
+        total += result.issues.length;
+        if (result.issues.length === 0)
+            continue;
+        const entries = sortedBySeverity(result.issues.map((issue) => ({ checkId: result.checkId, issue })));
+        const room = Math.max(0, limit - shown);
+        if (room === 0)
+            continue;
+        const listed = entries.slice(0, room);
+        shown += listed.length;
+        if (multiCheck) {
+            lines.push('', `#### ${render_checkLabel(result.checkId)} (${result.issues.length.toLocaleString('en-US')})`);
+        }
+        lines.push(...listed.map((entry) => formatIssue(entry, false)));
+    }
+    if (total > shown) {
+        const hidden = total - shown;
+        lines.push('', `${hidden.toLocaleString('en-US')} more ${hidden === 1 ? 'finding is' : 'findings are'} not listed here.${truncatedHint}`);
+    }
+    return lines;
 }
 function attributedIssues(results) {
     return results.flatMap(({ checkId, issues }) => issues.map((issue) => ({ checkId, issue })));
 }
 function topIssues(issues, limit) {
-    return issues
-        .map((entry, index) => ({ entry, index }))
-        .sort((left, right) => severityRank[left.entry.issue.severity] -
-        severityRank[right.entry.issue.severity] || left.index - right.index)
-        .slice(0, limit)
-        .map(({ entry }) => entry);
+    return sortedBySeverity(issues).slice(0, limit);
 }
 function render_countBySeverity(issues) {
     const counts = {
@@ -207106,9 +207291,14 @@ function decisionLine(verdict, presentation, diff) {
     }
     return `> ❌ ${verdict.failReason ?? 'Configured limits were exceeded.'}`;
 }
-function renderBody(input, flavor) {
+function renderBody(input, flavor, target) {
     const limit = input.topIssueLimit ?? DEFAULT_TOP_ISSUE_LIMIT;
     assertNonnegativeInteger(limit, 'topIssueLimit');
+    const findingLimit = input.findingLimit ??
+        (target === 'comment'
+            ? DEFAULT_COMMENT_FINDING_LIMIT
+            : DEFAULT_SUMMARY_FINDING_LIMIT);
+    assertNonnegativeInteger(findingLimit, 'findingLimit');
     if (input.report.results.length === 0) {
         throw new TypeError('Expected at least one check result to render');
     }
@@ -207135,6 +207325,14 @@ function renderBody(input, flavor) {
     const breakdownLines = multiCheck
         ? ['', '### Findings by check', ...checkBreakdown(input.report.results)]
         : [];
+    const totalIssues = input.report.results.reduce((total, result) => total + result.issues.length, 0);
+    // When the prioritized list already shows everything, a second copy of it
+    // would only make the comment longer.
+    const allFindingLines = totalIssues > selectedIssues.length
+        ? allFindings(input.report.results, findingLimit, multiCheck, target === 'comment'
+            ? " The workflow run's job summary lists more."
+            : '')
+        : [];
     return [
         input.summary.passed
             ? '## ✅ QualityGate passed'
@@ -207159,6 +207357,7 @@ function renderBody(input, flavor) {
         '',
         '### Prioritized issues',
         ...issueLines,
+        ...allFindingLines,
         '',
         presentation.disclaimer,
         ...(flavor === 'bitbucket' ? [] : ['', '</details>']),
@@ -207169,10 +207368,39 @@ function renderPrComment(input, options = {}) {
     const marker = flavor === 'bitbucket'
         ? QUALITYGATE_BITBUCKET_COMMENT_MARKER
         : QUALITYGATE_COMMENT_MARKER;
-    return `${renderBody(input, flavor)}\n${marker}`;
+    return `${renderBody(input, flavor, 'comment')}\n${marker}`;
 }
 function renderJobSummary(input) {
-    return renderBody(input, 'github');
+    return renderBody(input, 'github', 'summary');
+}
+/**
+ * The result as plain text for the job log, where Markdown is not rendered and
+ * a failed step otherwise shows no reason at all.
+ */
+function renderLogSummary(input) {
+    const { report, summary, failOn } = input;
+    const counts = summary.issueCounts;
+    const lines = [
+        summary.passed
+            ? 'QualityGate passed.'
+            : `QualityGate failed: ${summary.failReason ?? 'configured limits were exceeded.'}`,
+        `Scanned ${scrubUrl(report.url)} with the ${safeRuleId(report.bundleId)} bundle.`,
+        `Found ${counts.critical} critical (max ${failOn.maxCritical}), ${counts.serious} serious (max ${failOn.maxSerious}), ${counts.moderate} moderate, ${counts.minor} minor.`,
+    ];
+    for (const result of report.results) {
+        if (result.issues.length === 0)
+            continue;
+        lines.push('', `${render_checkLabel(result.checkId)}:`);
+        for (const { issue } of sortedBySeverity(result.issues.map((issue) => ({ checkId: result.checkId, issue })))) {
+            const safe = scrubIssue(issue);
+            const where = safe.selector === undefined
+                ? 'page'
+                : safe.selector.replace(/\s+/g, ' ');
+            const help = trustedHelpUrl(safe.helpUrl);
+            lines.push(`  [${safe.severity}] ${safeRuleId(safe.ruleId)} (${where})`, `    ${scrubText(safe.message).replace(/\s+/g, ' ').trim()}`, ...(help === undefined ? [] : [`    Help: ${help}`]));
+        }
+    }
+    return lines.join('\n');
 }
 //# sourceMappingURL=render.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/index.js
@@ -209302,6 +209530,9 @@ function readActionInputs(environment = process.env) {
     }, (name, message) => new Error(`Action input '${name}' ${message}`));
     return {
         ...(apiKey ? { apiKey } : {}),
+        ...(parseBoolean(inputs_readInput(environment, 'repository_security', 'false'), 'repository_security')
+            ? { repositorySecurity: true }
+            : {}),
         bundle: contract_BundleIdSchema.parse(inputs_readInput(environment, 'bundle', 'a11y')),
         comment: parseBoolean(inputs_readInput(environment, 'comment', 'true'), 'comment'),
         failOn: fail_on_parseFailOn(inputs_readInput(environment, 'fail_on', 'critical=0,serious=0'), "Action input 'fail_on'"),
@@ -209506,6 +209737,8 @@ async function loadRuntimeLighthouse(options = {}) {
 ;// CONCATENATED MODULE: ./src/publish.ts
 
 
+
+const REPORT_FILE_NAME = 'qualitygate-report.json';
 class GitHubCommentError extends Error {
     code = 'github_comment_failed';
     constructor(message, options) {
@@ -209521,6 +209754,31 @@ function isAppCommentReportResponse(verdict) {
 const defaultSummaryWriter = async (path, markdown) => {
     await (0,promises_namespaceObject.appendFile)(path, `${markdown}\n`, 'utf8');
 };
+const defaultReportWriter = async (path, json) => {
+    await (0,promises_namespaceObject.writeFile)(path, json, 'utf8');
+};
+const defaultOutputWriter = async (path, line) => {
+    await (0,promises_namespaceObject.appendFile)(path, `${line}\n`, 'utf8');
+};
+/**
+ * Every finding as JSON, for scripts and agents that act on the result. It holds
+ * the same scrubbed data the comment does, so it is safe to upload as an
+ * artifact.
+ */
+function renderReportJson(result) {
+    const { verdict } = result;
+    return `${JSON.stringify({
+        url: scrubUrl(result.report.url),
+        bundle: result.report.bundleId,
+        passed: verdict.passed,
+        ...(verdict.failReason === undefined
+            ? {}
+            : { failReason: verdict.failReason }),
+        issueCounts: verdict.issueCounts,
+        failOn: result.authorization.effectiveConfig.failOn,
+        results: result.report.results.map(scrubCheckResult),
+    }, null, 2)}\n`;
+}
 function githubHeaders(token) {
     return {
         accept: 'application/vnd.github+json',
@@ -209659,6 +209917,24 @@ async function publishActionResult(prepared, result, options = {}) {
             remainingRuns: result.authorization.remainingRuns,
         };
     await (options.summaryWriter ?? defaultSummaryWriter)(summaryPath, renderJobSummary(renderInput));
+    // The log is where a failed step is read first, and Markdown is not rendered
+    // there, so it gets its own plain-text account.
+    (options.log ?? console.info)(renderLogSummary(commonRenderInput));
+    const reportDirectory = environment.RUNNER_TEMP?.trim();
+    const outputPath = environment.GITHUB_OUTPUT?.trim();
+    if (reportDirectory) {
+        const reportPath = (0,external_node_path_.join)(reportDirectory, REPORT_FILE_NAME);
+        try {
+            await (options.reportWriter ?? defaultReportWriter)(reportPath, renderReportJson(result));
+            if (outputPath) {
+                await (options.outputWriter ?? defaultOutputWriter)(outputPath, `report_path=${reportPath}`);
+            }
+        }
+        catch (error) {
+            const detail = error instanceof Error ? error.message : 'unknown error';
+            (options.warn ?? console.warn)(`QualityGate report file skipped: ${detail}`);
+        }
+    }
     if (!enrichedVerdict && !prepared.inputs.comment)
         return;
     if (enrichedVerdict?.commentDelivery === 'not_requested')
@@ -209702,7 +209978,2025 @@ async function publishActionResult(prepared, result, options = {}) {
     }
 }
 
+;// CONCATENATED MODULE: ../security-engine/dist/discovery/languages.js
+
+const EXTENSIONS = {
+    '.ts': 'typescript',
+    '.tsx': 'typescript',
+    '.mts': 'typescript',
+    '.cts': 'typescript',
+    '.js': 'javascript',
+    '.jsx': 'javascript',
+    '.mjs': 'javascript',
+    '.cjs': 'javascript',
+    '.php': 'php',
+    '.phtml': 'php',
+    '.scala': 'scala',
+    '.sc': 'scala',
+    '.java': 'java',
+    '.py': 'python',
+    '.pyi': 'python',
+    '.go': 'go',
+    '.cs': 'csharp',
+    '.cshtml': 'csharp',
+    '.kt': 'kotlin',
+    '.kts': 'kotlin',
+    '.rb': 'ruby',
+    '.erb': 'ruby',
+    '.rs': 'rust',
+    '.c': 'c',
+    '.cc': 'cpp',
+    '.cpp': 'cpp',
+    '.cxx': 'cpp',
+    '.c++': 'cpp',
+    '.hpp': 'cpp',
+    '.hxx': 'cpp',
+    '.swift': 'swift',
+    '.dart': 'dart',
+    '.ex': 'elixir',
+    '.exs': 'elixir',
+    '.erl': 'erlang',
+    '.hrl': 'erlang',
+    '.clj': 'clojure',
+    '.cljs': 'clojure',
+    '.cljc': 'clojure',
+    '.groovy': 'groovy',
+    '.gvy': 'groovy',
+    '.m': 'objective_c',
+    '.mm': 'objective_c',
+    '.r': 'r',
+    '.rmd': 'r',
+    '.sh': 'shell',
+    '.bash': 'shell',
+    '.zsh': 'shell',
+    '.ps1': 'powershell',
+    '.psm1': 'powershell',
+    '.sql': 'sql',
+    '.tf': 'terraform',
+    '.tfvars': 'terraform',
+    '.hcl': 'terraform',
+    '.yaml': 'yaml',
+    '.yml': 'yaml',
+    '.json': 'json',
+    '.jsonc': 'json',
+};
+function detectLanguage(path) {
+    const lower = path.toLowerCase();
+    if (lower.endsWith('.blade.php'))
+        return 'php';
+    if (lower.endsWith('.sbt'))
+        return 'scala';
+    // Objective-C .m and shared .h are ambiguous until content/build metadata
+    // qualifies them; keep .m recognized only, never claim SAST coverage.
+    return EXTENSIONS[(0,external_node_path_.extname)(lower)];
+}
+//# sourceMappingURL=languages.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/discovery/manifests.js
+
+const ROOT_MANIFESTS = new Set([
+    'package.json',
+    'composer.json',
+    'build.sbt',
+    'pom.xml',
+    'build.gradle',
+    'build.gradle.kts',
+    'settings.gradle',
+    'settings.gradle.kts',
+    'pyproject.toml',
+    'Pipfile',
+    'go.mod',
+    'go.work',
+    'Cargo.toml',
+    'Gemfile',
+    'mix.exs',
+    'pubspec.yaml',
+    'Package.swift',
+    'deps.edn',
+    'project.clj',
+    'rebar.config',
+    'DESCRIPTION',
+    'renv.lock',
+    'conanfile.py',
+    'conanfile.txt',
+]);
+const LOCKFILES = new Set([
+    'package-lock.json',
+    'npm-shrinkwrap.json',
+    'pnpm-lock.yaml',
+    'yarn.lock',
+    'bun.lock',
+    'bun.lockb',
+    'composer.lock',
+    'poetry.lock',
+    'uv.lock',
+    'Pipfile.lock',
+    'pylock.toml',
+    'go.sum',
+    'Cargo.lock',
+    'Gemfile.lock',
+    'gems.locked',
+    'mix.lock',
+    'pubspec.lock',
+    'Package.resolved',
+    'Podfile.lock',
+    'Cartfile.resolved',
+    'rebar.lock',
+    'conan.lock',
+    'packages.lock.json',
+    'packages.config',
+    'project.assets.json',
+    'gradle.lockfile',
+    'buildscript-gradle.lockfile',
+    '.terraform.lock.hcl',
+]);
+function fileRole(path) {
+    const name = (0,external_node_path_.basename)(path);
+    if (ROOT_MANIFESTS.has(name) ||
+        /\.(?:csproj|fsproj|vbproj|sln|slnx)$/i.test(name)) {
+        return 'manifest';
+    }
+    if (LOCKFILES.has(name) || /^requirements(?:[-.][^/]*)?\.txt$/i.test(name)) {
+        return 'lockfile';
+    }
+    return undefined;
+}
+function isProjectRootManifest(path) {
+    const name = (0,external_node_path_.basename)(path);
+    return (ROOT_MANIFESTS.has(name) ||
+        /\.(?:csproj|fsproj|vbproj)$/i.test(name) ||
+        /^requirements(?:[-.][^/]*)?\.txt$/i.test(name));
+}
+//# sourceMappingURL=manifests.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/discovery/types.js
+const DEFAULT_DISCOVERY_LIMITS = {
+    maxDepth: 30,
+    maxEntries: 120_000,
+    maxFiles: 100_000,
+    maxFileBytes: 10 * 1024 * 1024,
+    maxGaps: 1_000,
+    maxPathLength: 1_024,
+    excludeDirectories: [
+        '.git',
+        'node_modules',
+        'vendor',
+        '.venv',
+        'venv',
+        'dist',
+        'build',
+        'target',
+        '.next',
+        '.terraform',
+        'coverage',
+    ],
+};
+//# sourceMappingURL=types.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/discovery/walk.js
+
+
+
+
+
+function relativePath(root, path) {
+    return (0,external_node_path_.relative)(root, path).split(external_node_path_.sep).join('/');
+}
+function nearestRoot(path, rootPaths) {
+    let current = path.split('/').slice(0, -1).join('/');
+    while (current) {
+        if (rootPaths.has(current))
+            return current;
+        current = current.split('/').slice(0, -1).join('/');
+    }
+    return '.';
+}
+function validateLimits(limits) {
+    const numbers = [
+        limits.maxDepth,
+        limits.maxEntries,
+        limits.maxFiles,
+        limits.maxFileBytes,
+        limits.maxGaps,
+        limits.maxPathLength,
+    ];
+    if (numbers.some((value) => !Number.isSafeInteger(value) || value < 1)) {
+        throw new RangeError('Discovery limits must be positive safe integers');
+    }
+}
+function hasControlCharacter(value) {
+    return [...value].some((character) => {
+        const code = character.codePointAt(0);
+        return code <= 31 || code === 127;
+    });
+}
+/**
+ * Recognize source and manifest files without reading or executing their contents.
+ * This walker is not a security sandbox: an adversary who can mutate the tree
+ * while it runs can race filesystem checks. Hosted scans require an immutable
+ * read-only snapshot and process isolation before calling it.
+ */
+async function discoverRepository(absoluteRoot, limits = DEFAULT_DISCOVERY_LIMITS) {
+    validateLimits(limits);
+    const rootStat = await (0,promises_namespaceObject.lstat)(absoluteRoot);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+        throw new Error('Discovery root must be a real directory');
+    }
+    const found = [];
+    const gaps = [];
+    let gapOverflow = 0;
+    let visitedEntries = 0;
+    let scannedBytes = 0;
+    let complete = true;
+    const excluded = new Set(limits.excludeDirectories);
+    const stack = [
+        { absolute: absoluteRoot, depth: 0 },
+    ];
+    function gap(path, reason) {
+        complete = false;
+        if (gaps.length < limits.maxGaps)
+            gaps.push({ path, reason });
+        else
+            gapOverflow += 1;
+    }
+    while (stack.length > 0) {
+        const directory = stack.pop();
+        // Stream entries so the budget still bounds memory for huge directories.
+        const entries = await (0,promises_namespaceObject.opendir)(directory.absolute);
+        for await (const entry of entries) {
+            const absolute = (0,external_node_path_.join)(directory.absolute, entry.name);
+            const path = relativePath(absoluteRoot, absolute);
+            visitedEntries += 1;
+            if (visitedEntries > limits.maxEntries) {
+                gap(path, 'entry_limit');
+                stack.length = 0;
+                break;
+            }
+            if (path.length > limits.maxPathLength) {
+                gap(path.slice(0, limits.maxPathLength), 'path_too_long');
+                continue;
+            }
+            if (hasControlCharacter(path) || path.includes('\\')) {
+                gap(path, 'invalid_path');
+                continue;
+            }
+            const metadata = await (0,promises_namespaceObject.lstat)(absolute);
+            if (metadata.isSymbolicLink()) {
+                gap(path, 'symlink');
+                continue;
+            }
+            if (metadata.isDirectory()) {
+                if (excluded.has(entry.name)) {
+                    gap(path, 'excluded');
+                }
+                else if (directory.depth + 1 > limits.maxDepth) {
+                    gap(path, 'depth_limit');
+                }
+                else {
+                    stack.push({ absolute, depth: directory.depth + 1 });
+                }
+                continue;
+            }
+            if (!metadata.isFile()) {
+                gap(path, 'unsupported_type');
+                continue;
+            }
+            if (found.length >= limits.maxFiles) {
+                gap(path, 'file_limit');
+                stack.length = 0;
+                break;
+            }
+            if (metadata.size > limits.maxFileBytes) {
+                gap(path, 'file_too_large');
+                continue;
+            }
+            found.push({
+                path,
+                language: detectLanguage(path),
+                role: fileRole(path),
+            });
+            scannedBytes += metadata.size;
+        }
+    }
+    const rootPaths = new Set(['.']);
+    for (const file of found) {
+        if (isProjectRootManifest(file.path)) {
+            rootPaths.add(file.path.split('/').slice(0, -1).join('/') || '.');
+        }
+    }
+    const roots = new Map();
+    for (const file of found) {
+        const key = nearestRoot(file.path, rootPaths);
+        let group = roots.get(key);
+        if (!group) {
+            group = {
+                languages: new Set(),
+                sourceFiles: [],
+                manifests: [],
+                lockfiles: [],
+            };
+            roots.set(key, group);
+        }
+        if (file.language && !file.role) {
+            group.languages.add(file.language);
+            group.sourceFiles.push(file.path);
+        }
+        if (file.role === 'manifest')
+            group.manifests.push(file.path);
+        if (file.role === 'lockfile')
+            group.lockfiles.push(file.path);
+    }
+    const orderedRoots = [...roots.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([path, group]) => ({
+        path,
+        languages: [...group.languages].sort(),
+        sourceFiles: group.sourceFiles.sort(),
+        manifests: group.manifests.sort(),
+        lockfiles: group.lockfiles.sort(),
+    }));
+    return {
+        roots: orderedRoots,
+        scannedFiles: found.length,
+        scannedBytes,
+        visitedEntries,
+        gaps,
+        gapOverflow,
+        complete,
+        capability: 'recognition_only',
+    };
+}
+//# sourceMappingURL=walk.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/common.js
+
+const SECURITY_SCHEMA_VERSION = 1;
+const IdSchema = schemas_uuid();
+const common_Sha256Schema = schemas_string().regex(/^[a-f0-9]{64}$/);
+const common_CommitShaSchema = schemas_string().regex(/^[a-f0-9]{40,64}$/i);
+const UtcDateTimeSchema = iso_datetime({ offset: true });
+function common_hasControlCharacter(value) {
+    return [...value].some((character) => {
+        const code = character.codePointAt(0);
+        return code <= 31 || code === 127;
+    });
+}
+// Paths are repository-relative POSIX paths. A host path or an embedded control
+// character may never cross the wire as a finding or discovery locator.
+const common_RepositoryPathSchema = schemas_string()
+    .min(1)
+    .max(1024)
+    .refine((path) => path !== '.' &&
+    !path.startsWith('/') &&
+    !path.includes('\\') &&
+    !common_hasControlCharacter(path) &&
+    path
+        .split('/')
+        .every((part) => part !== '' && part !== '.' && part !== '..'), 'Expected a normalized repository-relative POSIX path');
+const RootPathSchema = union([literal('.'), common_RepositoryPathSchema]);
+const SecurityFamilySchema = schemas_enum([
+    'sast',
+    'sca',
+    'secrets',
+    'iac',
+    'container',
+]);
+const SecuritySeveritySchema = schemas_enum([
+    'critical',
+    'high',
+    'medium',
+    'low',
+    'informational',
+    'unknown',
+]);
+const ConfidenceSchema = schemas_enum(['high', 'medium', 'low', 'unknown']);
+const CoverageStateSchema = schemas_enum(['complete', 'partial', 'none']);
+const CoverageReasonSchema = schemas_enum([
+    'excluded',
+    'unsupported_language',
+    'unsupported_manifest',
+    'unresolved_dependencies',
+    'scanner_unavailable',
+    'scanner_failed',
+    'timeout',
+    'budget_exceeded',
+    'parse_error',
+    'cancelled',
+]);
+const BoundedIdentifierSchema = schemas_string().trim().min(1).max(200);
+//# sourceMappingURL=common.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/authorization.js
+
+
+const SecurityAuthorizeRequestSchema = strictObject({
+    protocolVersion: literal(1),
+    apiKey: schemas_string().min(1).max(512),
+    oidcToken: schemas_string().min(1).max(8192),
+    provider: schemas_enum(['github', 'gitlab', 'bitbucket']),
+    repo: schemas_string()
+        .min(3)
+        .max(255)
+        .regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/)
+        .refine((repo) => repo.split('/').every((part) => part !== '.' && part !== '..'), 'Repository segments cannot be dot paths'),
+    commitSha: common_CommitShaSchema,
+    baseSha: common_CommitShaSchema.optional(),
+    branch: schemas_string().min(1).max(255),
+    trigger: schemas_enum(['ci', 'scheduled']),
+    idempotencyKey: IdSchema,
+    discoveryDigest: common_Sha256Schema,
+    requestedProfiles: array(BoundedIdentifierSchema).max(50),
+});
+const SecurityAuthorizeAllowedSchema = strictObject({
+    allowed: literal(true),
+    scanId: IdSchema,
+    capabilityToken: schemas_string().min(1),
+    expiresAt: UtcDateTimeSchema,
+    configHash: common_Sha256Schema,
+    effectiveProfiles: array(BoundedIdentifierSchema).max(50),
+    limits: strictObject({
+        maxRepositoryBytes: schemas_number().int().positive(),
+        maxFiles: schemas_number().int().positive(),
+        maxResultBytes: schemas_number().int().positive(),
+    }),
+    reused: schemas_boolean(),
+});
+const SecurityAuthorizeDeniedSchema = strictObject({
+    allowed: literal(false),
+    reason: schemas_enum([
+        'disabled',
+        'invalid_key',
+        'identity_required',
+        'identity_invalid',
+        'identity_unavailable',
+        'repo_mismatch',
+        'trigger_mismatch',
+        'profile_unavailable',
+        'quota_exceeded',
+        'idempotency_conflict',
+    ]),
+});
+const SecurityAuthorizeResponseSchema = discriminatedUnion('allowed', [
+    SecurityAuthorizeAllowedSchema,
+    SecurityAuthorizeDeniedSchema,
+]);
+//# sourceMappingURL=authorization.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/coverage.js
+
+
+const CoverageGapSchema = strictObject({
+    reason: CoverageReasonSchema,
+    root: RootPathSchema,
+    path: common_RepositoryPathSchema.optional(),
+    scannerId: BoundedIdentifierSchema.optional(),
+    detailCode: BoundedIdentifierSchema.optional(),
+});
+const SecurityCoverageSchema = strictObject({
+    state: CoverageStateSchema,
+    planned: schemas_number().int().nonnegative().max(100_000),
+    completed: schemas_number().int().nonnegative().max(100_000),
+    gaps: array(CoverageGapSchema).max(1_000),
+})
+    .superRefine((coverage, context) => {
+    if (coverage.completed > coverage.planned) {
+        context.addIssue({
+            code: 'custom',
+            message: 'Completed exceeds planned',
+        });
+    }
+    if (coverage.state === 'complete' &&
+        (coverage.completed !== coverage.planned || coverage.gaps.length > 0)) {
+        context.addIssue({
+            code: 'custom',
+            message: 'Complete coverage has gaps',
+        });
+    }
+    if (coverage.state === 'none' && coverage.completed !== 0) {
+        context.addIssue({
+            code: 'custom',
+            message: 'No coverage has completed tasks',
+        });
+    }
+});
+//# sourceMappingURL=coverage.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/execution.js
+
+
+
+const ExecutionStatusSchema = schemas_enum([
+    'planned',
+    'queued',
+    'running',
+    'succeeded',
+    'failed',
+    'timed_out',
+    'cancelled',
+    'unavailable',
+    'not_applicable',
+]);
+const ScannerExecutionSchema = strictObject({
+    id: IdSchema,
+    scanId: IdSchema,
+    scannerId: BoundedIdentifierSchema,
+    profileId: BoundedIdentifierSchema,
+    family: SecurityFamilySchema,
+    root: RootPathSchema,
+    adapterVersion: BoundedIdentifierSchema,
+    engineVersion: BoundedIdentifierSchema.optional(),
+    engineDigest: common_Sha256Schema.optional(),
+    rulesDigest: common_Sha256Schema.optional(),
+    status: ExecutionStatusSchema,
+    required: schemas_boolean(),
+    attempt: schemas_number().int().nonnegative().max(100),
+    coverage: SecurityCoverageSchema.optional(),
+    startedAt: UtcDateTimeSchema.optional(),
+    finishedAt: UtcDateTimeSchema.optional(),
+    errorKind: BoundedIdentifierSchema.optional(),
+});
+//# sourceMappingURL=execution.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/finding.js
+
+
+const SourceLocationSchema = strictObject({
+    kind: literal('source'),
+    path: common_RepositoryPathSchema,
+    line: schemas_number().int().positive(),
+    column: schemas_number().int().positive().optional(),
+    endLine: schemas_number().int().positive().optional(),
+    endColumn: schemas_number().int().positive().optional(),
+});
+const PackageLocationSchema = strictObject({
+    kind: literal('package'),
+    occurrenceId: IdSchema,
+    manifestPath: common_RepositoryPathSchema,
+    purl: schemas_string().startsWith('pkg:').max(2048),
+    advisoryId: BoundedIdentifierSchema,
+});
+const ConfigurationLocationSchema = strictObject({
+    kind: literal('configuration'),
+    path: common_RepositoryPathSchema,
+    resource: BoundedIdentifierSchema,
+    property: schemas_string().min(1).max(512),
+});
+// No message, snippet, match, secret value or secret-derived digest field.
+const SecretMetadataLocationSchema = strictObject({
+    kind: literal('secret_metadata'),
+    path: common_RepositoryPathSchema,
+    line: schemas_number().int().positive(),
+    commitSha: common_CommitShaSchema,
+});
+const SecurityLocationSchema = discriminatedUnion('kind', [
+    SourceLocationSchema,
+    PackageLocationSchema,
+    ConfigurationLocationSchema,
+    SecretMetadataLocationSchema,
+]);
+const FindingObservationSchema = strictObject({
+    scanId: IdSchema,
+    executionId: IdSchema,
+    root: RootPathSchema,
+    family: SecurityFamilySchema,
+    scannerId: BoundedIdentifierSchema,
+    ruleId: BoundedIdentifierSchema,
+    fingerprint: common_Sha256Schema,
+    fingerprintVersion: schemas_number().int().positive(),
+    severity: SecuritySeveritySchema,
+    confidence: ConfidenceSchema,
+    language: BoundedIdentifierSchema.optional(),
+    cwes: array(schemas_string().regex(/^CWE-\d+$/)).max(20),
+    location: SecurityLocationSchema,
+    evidenceCode: BoundedIdentifierSchema,
+    // Human-readable content is a reviewed rule-pack reference, never raw source.
+    guidanceId: BoundedIdentifierSchema.optional(),
+})
+    .superRefine((finding, context) => {
+    const expected = {
+        sast: 'source',
+        sca: 'package',
+        secrets: 'secret_metadata',
+        iac: 'configuration',
+        container: 'package',
+    };
+    if (finding.location.kind !== expected[finding.family]) {
+        context.addIssue({
+            code: 'custom',
+            message: 'Location does not match finding family',
+        });
+    }
+});
+//# sourceMappingURL=finding.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/inventory.js
+
+
+const DependencyOccurrenceSchema = strictObject({
+    id: IdSchema,
+    root: RootPathSchema,
+    manifestPath: common_RepositoryPathSchema,
+    ecosystem: BoundedIdentifierSchema,
+    name: schemas_string().min(1).max(512),
+    purl: schemas_string().startsWith('pkg:').max(2048).optional(),
+    exactVersion: schemas_string().min(1).max(256).optional(),
+    versionConstraint: schemas_string().min(1).max(256).optional(),
+    versionStatus: schemas_enum(['resolved', 'unresolved']),
+    directness: schemas_enum(['direct', 'transitive', 'unknown']),
+    scope: schemas_enum(['runtime', 'development', 'test', 'optional', 'unknown']),
+    evidence: schemas_enum(['lockfile', 'manifest', 'sbom', 'resolved_graph']),
+})
+    .superRefine((dependency, context) => {
+    if (dependency.versionStatus === 'resolved' && !dependency.exactVersion) {
+        context.addIssue({
+            code: 'custom',
+            message: 'Resolved version needs exactVersion',
+        });
+    }
+    if (dependency.versionStatus === 'unresolved' && dependency.exactVersion) {
+        context.addIssue({
+            code: 'custom',
+            message: 'Unresolved dependency cannot have exactVersion',
+        });
+    }
+});
+const InventorySummarySchema = strictObject({
+    scanId: IdSchema,
+    root: RootPathSchema,
+    digest: common_Sha256Schema,
+    extractorVersion: BoundedIdentifierSchema,
+    state: schemas_enum(['complete', 'partial', 'unresolved', 'unsupported']),
+    directCount: schemas_number().int().nonnegative(),
+    transitiveCount: schemas_number().int().nonnegative(),
+    unknownCount: schemas_number().int().nonnegative(),
+    missingReasons: array(BoundedIdentifierSchema).max(100),
+});
+//# sourceMappingURL=inventory.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/ingest.js
+
+
+
+
+
+const InventoryDependencySchema = strictObject({
+    inventoryDigest: common_Sha256Schema,
+    occurrence: DependencyOccurrenceSchema,
+});
+const InventoryEdgeSchema = strictObject({
+    inventoryDigest: common_Sha256Schema,
+    root: RootPathSchema,
+    parentId: IdSchema,
+    childId: IdSchema,
+    relation: schemas_enum(['requires', 'optional', 'peer', 'build', 'unknown']),
+});
+const SecurityChunkPayloadSchema = strictObject({
+    observations: array(FindingObservationSchema).max(500),
+    inventories: array(InventorySummarySchema).max(20).optional(),
+    dependencies: array(InventoryDependencySchema).max(500).optional(),
+    edges: array(InventoryEdgeSchema).max(1000).optional(),
+});
+const TaskSchema = strictObject({
+    taskKey: BoundedIdentifierSchema,
+    root: RootPathSchema,
+    scannerId: BoundedIdentifierSchema,
+    profileId: BoundedIdentifierSchema,
+    family: SecurityFamilySchema.exclude(['secrets']),
+    adapterVersion: BoundedIdentifierSchema,
+    engineDigest: common_Sha256Schema.optional(),
+    rulesDigest: common_Sha256Schema.optional(),
+    configDigest: common_Sha256Schema,
+});
+const SecurityPlanRequestSchema = strictObject({
+    tasks: array(TaskSchema).min(1).max(100),
+});
+const SecurityChunkRequestSchema = SecurityChunkPayloadSchema.extend({
+    attempt: literal(0),
+    sequence: schemas_number().int().min(0).max(1023),
+    sha256: common_Sha256Schema,
+}).refine((chunk) => chunk.observations.every((item) => item.family !== 'secrets'), 'Secret observations remain CI-local');
+const SecurityExecutionResultSchema = strictObject({
+    executionId: IdSchema,
+    status: schemas_enum(['succeeded', 'failed', 'timed_out', 'unavailable']),
+    coverage: SecurityCoverageSchema,
+    receipts: array(common_Sha256Schema).max(1024),
+});
+const SecurityCompleteRequestSchema = strictObject({
+    executions: array(SecurityExecutionResultSchema).min(1).max(100),
+});
+const SecurityFailRequestSchema = strictObject({
+    expectedStateVersion: schemas_number().int().nonnegative(),
+    errorKind: schemas_enum([
+        'scanner_failed',
+        'scanner_unavailable',
+        'timeout',
+        'budget_exceeded',
+        'parse_error',
+        'internal_error',
+    ]),
+});
+const SecurityCancelRequestSchema = strictObject({
+    expectedStateVersion: schemas_number().int().nonnegative(),
+});
+//# sourceMappingURL=ingest.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/inventory-digest.js
+/** Stable JSON input for a SHA-256 inventory digest, shared with CI parsers. */
+function canonicalInventoryJson(root, dependencies, edges) {
+    return JSON.stringify({
+        root,
+        dependencies: [...dependencies].sort((a, b) => a.id.localeCompare(b.id)),
+        edges: [...edges]
+            .map((edge) => ({
+            root: edge.root,
+            parentId: edge.parentId,
+            childId: edge.childId,
+            relation: edge.relation,
+        }))
+            .sort((a, b) => `${a.parentId}:${a.childId}:${a.relation}`.localeCompare(`${b.parentId}:${b.childId}:${b.relation}`)),
+    });
+}
+//# sourceMappingURL=inventory-digest.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/policy.js
+
+
+const PolicyRuleSchema = strictObject({
+    id: BoundedIdentifierSchema,
+    family: SecurityFamilySchema,
+    scope: schemas_enum(['new', 'all']),
+    minimumSeverity: SecuritySeveritySchema.exclude(['unknown']),
+    minimumConfidence: schemas_enum(['high', 'medium', 'low']),
+    action: schemas_enum(['block', 'warn']),
+});
+const policy_SecurityPolicySchema = strictObject({
+    id: IdSchema,
+    version: schemas_number().int().positive(),
+    requiredProfiles: array(BoundedIdentifierSchema).max(100),
+    requireCompleteCoverage: schemas_boolean(),
+    rules: array(PolicyRuleSchema).max(100),
+    effectiveAt: UtcDateTimeSchema,
+});
+//# sourceMappingURL=policy.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/scan.js
+
+
+
+const ScanLifecycleSchema = schemas_enum([
+    'authorized',
+    'discovering',
+    'queued',
+    'running',
+    'normalizing',
+    'enriching',
+    'completed',
+    'failed',
+    'cancelled',
+    'expired',
+]);
+const GateStatusSchema = schemas_enum([
+    'pending',
+    'pass',
+    'fail',
+    'indeterminate',
+]);
+const SecurityScanSchema = strictObject({
+    schemaVersion: literal(SECURITY_SCHEMA_VERSION),
+    id: IdSchema,
+    projectId: IdSchema,
+    provider: schemas_enum(['github', 'gitlab', 'bitbucket', 'local']),
+    commitSha: common_CommitShaSchema.optional(),
+    baseSha: common_CommitShaSchema.optional(),
+    branch: schemas_string().min(1).max(255).optional(),
+    trigger: schemas_enum(['ci', 'manual', 'scheduled']),
+    executionMode: schemas_enum(['customer_ci', 'hosted']),
+    configHash: common_Sha256Schema,
+    lifecycle: ScanLifecycleSchema,
+    coverage: SecurityCoverageSchema.optional(),
+    gateStatus: GateStatusSchema,
+    stateVersion: schemas_number().int().nonnegative(),
+    progressVersion: schemas_number().int().nonnegative(),
+    createdAt: UtcDateTimeSchema,
+    finishedAt: UtcDateTimeSchema.optional(),
+    errorKind: BoundedIdentifierSchema.optional(),
+})
+    .superRefine((scan, context) => {
+    if (scan.lifecycle !== 'completed' && scan.gateStatus === 'pass') {
+        context.addIssue({
+            code: 'custom',
+            message: 'Only completed scans can pass',
+        });
+    }
+    if (scan.gateStatus === 'pass' && scan.coverage?.state !== 'complete') {
+        context.addIssue({
+            code: 'custom',
+            message: 'A passing scan needs complete coverage',
+        });
+    }
+});
+//# sourceMappingURL=scan.js.map
+;// CONCATENATED MODULE: ../security-contracts/dist/index.js
+
+
+
+
+
+
+
+
+
+
+//# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/policy/evaluate.js
+
+
+const GateFindingSchema = strictObject({
+    id: schemas_uuid(),
+    family: SecurityFamilySchema,
+    severity: SecuritySeveritySchema,
+    confidence: ConfidenceSchema,
+    delta: schemas_enum(['new', 'existing', 'unknown']),
+});
+const GateExecutionSchema = strictObject({
+    profileId: schemas_string().min(1).max(200),
+    family: SecurityFamilySchema,
+    status: schemas_enum([
+        'succeeded',
+        'failed',
+        'timed_out',
+        'cancelled',
+        'unavailable',
+    ]),
+    coverage: SecurityCoverageSchema,
+    evidenceReady: schemas_boolean(),
+});
+const GateInputSchema = strictObject({
+    lifecycle: schemas_enum(['completed', 'failed', 'cancelled', 'expired']),
+    coverage: SecurityCoverageSchema,
+    baselineReady: schemas_boolean(),
+    executions: array(GateExecutionSchema).max(100_000),
+    findings: array(GateFindingSchema).max(100_000),
+});
+const evaluate_severityRank = {
+    informational: 0,
+    low: 1,
+    medium: 2,
+    high: 3,
+    critical: 4,
+};
+const confidenceRank = { low: 0, medium: 1, high: 2 };
+const MAX_EVIDENCE = 500;
+/** Deterministic policy decision over already normalized, evidenced results. */
+function evaluateSecurityPolicy(rawPolicy, rawInput) {
+    const policy = SecurityPolicySchema.parse(rawPolicy);
+    const input = GateInputSchema.parse(rawInput);
+    const blockers = [];
+    const warnings = [];
+    const unknowns = [];
+    let blockerCount = 0;
+    let warningCount = 0;
+    let unknownCount = 0;
+    const addUnknown = (unknown) => {
+        unknownCount++;
+        if (unknowns.length < MAX_EVIDENCE)
+            unknowns.push(unknown);
+    };
+    const addEvidence = (action, evidence) => {
+        if (action === 'block') {
+            blockerCount++;
+            if (blockers.length < MAX_EVIDENCE)
+                blockers.push(evidence);
+        }
+        else {
+            warningCount++;
+            if (warnings.length < MAX_EVIDENCE)
+                warnings.push(evidence);
+        }
+    };
+    if (input.lifecycle !== 'completed') {
+        addUnknown({ reason: 'scan_not_completed' });
+    }
+    if (input.coverage.planned === 0 || input.executions.length === 0) {
+        addUnknown({ reason: 'no_scanner_work' });
+    }
+    if (policy.requireCompleteCoverage && input.coverage.state !== 'complete') {
+        addUnknown({ reason: 'coverage_incomplete' });
+    }
+    if (!input.baselineReady &&
+        policy.rules.some((rule) => rule.scope === 'new' && rule.action === 'block')) {
+        addUnknown({ reason: 'baseline_unavailable' });
+    }
+    for (const profileId of new Set(policy.requiredProfiles)) {
+        const executions = input.executions.filter((execution) => execution.profileId === profileId);
+        if (executions.length === 0 ||
+            executions.some((execution) => execution.status !== 'succeeded' ||
+                execution.coverage.state !== 'complete' ||
+                !execution.evidenceReady)) {
+            addUnknown({ reason: 'required_profile_incomplete', profileId });
+        }
+    }
+    for (const rule of policy.rules) {
+        const familyExecutions = input.executions.filter((execution) => execution.family === rule.family);
+        if (familyExecutions.length === 0 ||
+            familyExecutions.some((execution) => execution.status !== 'succeeded' ||
+                execution.coverage.state !== 'complete' ||
+                !execution.evidenceReady)) {
+            addUnknown({
+                reason: 'family_unassessed',
+                ruleId: rule.id,
+                family: rule.family,
+            });
+        }
+        if (familyExecutions.some((execution) => !execution.evidenceReady) &&
+            rule.action === 'block') {
+            addUnknown({
+                reason: 'evidence_incomplete',
+                ruleId: rule.id,
+                family: rule.family,
+            });
+        }
+        for (const finding of input.findings) {
+            if (finding.family !== rule.family)
+                continue;
+            const confidence = finding.confidence === 'unknown'
+                ? undefined
+                : confidenceRank[finding.confidence];
+            const severity = finding.severity === 'unknown'
+                ? undefined
+                : evaluate_severityRank[finding.severity];
+            // A known below-threshold dimension excludes this rule even when the
+            // other dimension is unknown.
+            if (confidence !== undefined &&
+                confidence < confidenceRank[rule.minimumConfidence])
+                continue;
+            if (severity !== undefined &&
+                severity < evaluate_severityRank[rule.minimumSeverity])
+                continue;
+            if (severity === undefined) {
+                if (rule.action === 'block')
+                    addUnknown({
+                        reason: 'unknown_severity',
+                        ruleId: rule.id,
+                        findingId: finding.id,
+                    });
+                continue;
+            }
+            if (confidence === undefined) {
+                if (rule.action === 'block')
+                    addUnknown({
+                        reason: 'unknown_confidence',
+                        ruleId: rule.id,
+                        findingId: finding.id,
+                    });
+                continue;
+            }
+            if (rule.scope === 'new' && finding.delta === 'unknown') {
+                if (rule.action === 'block')
+                    addUnknown({
+                        reason: 'unknown_baseline',
+                        ruleId: rule.id,
+                        findingId: finding.id,
+                    });
+                continue;
+            }
+            if (rule.scope === 'new' && finding.delta === 'existing')
+                continue;
+            addEvidence(rule.action, {
+                ruleId: rule.id,
+                findingId: finding.id,
+            });
+        }
+    }
+    return {
+        status: blockerCount > 0 ? 'fail' : unknownCount > 0 ? 'indeterminate' : 'pass',
+        policyId: policy.id,
+        policyVersion: policy.version,
+        blockerCount,
+        warningCount,
+        unknownCount,
+        blockers,
+        warnings,
+        unknowns,
+    };
+}
+//# sourceMappingURL=evaluate.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/policy/baseline.js
+
+
+const ScopeSchema = strictObject({
+    provider: schemas_enum(['github', 'gitlab', 'bitbucket', 'local']),
+    root: schemas_string().min(1).max(2048),
+    profileId: schemas_string().min(1).max(200),
+    scannerId: schemas_string().min(1).max(200),
+    adapterVersion: schemas_string().min(1).max(200),
+    engineDigest: common_Sha256Schema,
+    rulesDigest: common_Sha256Schema,
+    configDigest: common_Sha256Schema,
+});
+const BaselineSnapshotSchema = strictObject({
+    commitSha: common_CommitShaSchema,
+    coverageState: schemas_enum(['complete', 'partial', 'none']),
+    materialized: schemas_boolean(),
+    scopeAssessed: schemas_boolean(),
+    scope: ScopeSchema,
+    fingerprints: array(common_Sha256Schema).max(100_000),
+});
+/** A missing or incompatible baseline never makes an observation "new". */
+function createBaselineClassifier(input) {
+    const baseSha = input.baseSha
+        ? CommitShaSchema.parse(input.baseSha).toLowerCase()
+        : null;
+    const currentScope = ScopeSchema.parse(input.currentScope);
+    const baseline = input.baseline
+        ? BaselineSnapshotSchema.parse(input.baseline)
+        : null;
+    const comparable = baseSha !== null &&
+        baseline !== null &&
+        baseline.commitSha.toLowerCase() === baseSha &&
+        baseline.coverageState === 'complete' &&
+        baseline.materialized &&
+        baseline.scopeAssessed &&
+        Object.keys(currentScope).every((key) => currentScope[key] ===
+            baseline.scope[key]);
+    const fingerprints = comparable ? new Set(baseline.fingerprints) : null;
+    return (fingerprint) => {
+        const valid = Sha256Schema.parse(fingerprint);
+        if (!fingerprints)
+            return 'unknown';
+        return fingerprints.has(valid) ? 'existing' : 'new';
+    };
+}
+//# sourceMappingURL=baseline.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/process.js
+
+
+
+
+
+const MAX_TIMEOUT_MS = (/* unused pure expression or super */ null && (30 * 60 * 1000));
+const MAX_OUTPUT_BYTES = (/* unused pure expression or super */ null && (20 * 1024 * 1024));
+function validate(spec, budget) {
+    if (!isAbsolute(spec.executable) || !isAbsolute(spec.cwd)) {
+        throw new TypeError('Executable and working directory must be absolute');
+    }
+    if (!/^[a-f0-9]{64}$/.test(spec.executableSha256)) {
+        throw new TypeError('Expected a SHA-256 executable digest');
+    }
+    if (spec.args.some((arg) => typeof arg !== 'string' ||
+        arg.length > 4096 ||
+        [...arg].some((character) => character.charCodeAt(0) === 0))) {
+        throw new TypeError('Invalid scanner argument');
+    }
+    if (spec.args.length > 256)
+        throw new RangeError('Too many scanner arguments');
+    for (const value of [
+        budget.timeoutMs,
+        budget.maxStdoutBytes,
+        budget.maxStderrBytes,
+    ]) {
+        if (!Number.isSafeInteger(value) || value < 1) {
+            throw new RangeError('Process budgets must be positive safe integers');
+        }
+    }
+    if (budget.timeoutMs > MAX_TIMEOUT_MS ||
+        budget.maxStdoutBytes > MAX_OUTPUT_BYTES ||
+        budget.maxStderrBytes > MAX_OUTPUT_BYTES) {
+        throw new RangeError('Process budget exceeds engine ceiling');
+    }
+    for (const [key, value] of Object.entries(spec.environment ?? {})) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ||
+            /^(?:LD_|DYLD_|GIT_CONFIG_)/.test(key) ||
+            ['NODE_OPTIONS', 'PYTHONPATH', 'RUBYOPT', 'BASH_ENV', 'ENV'].includes(key)) {
+            throw new TypeError('Invalid scanner environment key');
+        }
+        if (typeof value !== 'string' ||
+            value.includes('\0') ||
+            value.length > 4096) {
+            throw new TypeError('Invalid scanner environment value');
+        }
+    }
+}
+async function verifyExecutable(spec) {
+    const [metadata, executablePath, workspacePath] = await Promise.all([
+        lstat(spec.executable),
+        realpath(spec.executable),
+        realpath(spec.cwd),
+    ]);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        return false;
+    }
+    if (executablePath === workspacePath ||
+        executablePath.startsWith(`${workspacePath}${sep}`)) {
+        return false;
+    }
+    const digest = createHash('sha256');
+    for await (const chunk of createReadStream(spec.executable))
+        digest.update(chunk);
+    return digest.digest('hex') === spec.executableSha256;
+}
+/**
+ * Runs a trusted adapter binary against an immutable CI workspace. This is not
+ * a sandbox: hosted execution additionally requires process/container isolation,
+ * a read-only snapshot, network controls, and CPU/memory limits outside Node.
+ */
+async function runTrustedProcess(spec, budget, signal) {
+    validate(spec, budget);
+    const started = performance.now();
+    const result = (outcome, exitCode = null, stdout = Buffer.alloc(0), stderrBytes = 0) => ({
+        outcome,
+        exitCode,
+        stdout,
+        stderrBytes,
+        durationMs: Math.round(performance.now() - started),
+    });
+    if (signal.aborted)
+        return result('cancelled');
+    // Node cannot reliably terminate descendant processes on Windows here.
+    if (process.platform === 'win32')
+        return result('unavailable');
+    try {
+        const directory = await lstat(spec.cwd);
+        if (!directory.isDirectory() || directory.isSymbolicLink()) {
+            return result('unavailable');
+        }
+        if (!(await verifyExecutable(spec)))
+            return result('unavailable');
+    }
+    catch {
+        return result('unavailable');
+    }
+    if (signal.aborted)
+        return result('cancelled');
+    return new Promise((resolve) => {
+        let outcome;
+        let stderrBytes = 0;
+        let stdoutBytes = 0;
+        const chunks = [];
+        const child = spawn(spec.executable, [...spec.args], {
+            cwd: spec.cwd,
+            env: { ...spec.environment },
+            shell: false,
+            detached: process.platform !== 'win32',
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        function stop(reason) {
+            if (outcome)
+                return;
+            outcome = reason;
+            if (child.pid && process.platform !== 'win32') {
+                try {
+                    process.kill(-child.pid, 'SIGKILL');
+                }
+                catch {
+                    child.kill('SIGKILL');
+                }
+            }
+            else {
+                child.kill('SIGKILL');
+            }
+        }
+        const timeout = setTimeout(() => stop('timed_out'), budget.timeoutMs);
+        const onAbort = () => stop('cancelled');
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted)
+            stop('cancelled');
+        child.stdout?.on('data', (chunk) => {
+            stdoutBytes += chunk.length;
+            if (stdoutBytes > budget.maxStdoutBytes) {
+                stop('output_limit');
+            }
+            else if (!outcome) {
+                chunks.push(chunk);
+            }
+        });
+        child.stderr?.on('data', (chunk) => {
+            stderrBytes += chunk.length;
+            if (stderrBytes > budget.maxStderrBytes)
+                stop('output_limit');
+        });
+        child.on('error', () => {
+            if (!outcome)
+                outcome = 'unavailable';
+        });
+        child.on('close', (code) => {
+            clearTimeout(timeout);
+            signal.removeEventListener('abort', onAbort);
+            const finalOutcome = outcome ??
+                (code === 0
+                    ? 'succeeded'
+                    : code !== null && spec.findingsExitCodes?.includes(code)
+                        ? 'findings'
+                        : 'failed');
+            resolve(result(finalOutcome, code, finalOutcome === 'succeeded' || finalOutcome === 'findings'
+                ? Buffer.concat(chunks)
+                : Buffer.alloc(0), stderrBytes));
+        });
+    });
+}
+//# sourceMappingURL=process.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/sca/passive-inventory.js
+
+
+class InventoryParseError extends Error {
+    code;
+    constructor(code) {
+        super(`Passive inventory parse failed (${code})`);
+        this.code = code;
+    }
+}
+const passive_inventory_hash = (value) => (0,external_node_crypto_.createHash)('sha256').update(value).digest('hex');
+function uuidFor(value) {
+    const hex = passive_inventory_hash(value).slice(0, 32);
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+function passive_inventory_object(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value
+        : undefined;
+}
+function passive_inventory_record(value) {
+    return passive_inventory_object(value) ?? {};
+}
+function passive_inventory_text(value) {
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+function parseJson(source) {
+    if (Buffer.byteLength(source) > 10 * 1024 * 1024) {
+        throw new InventoryParseError('size_limit');
+    }
+    try {
+        const parsed = passive_inventory_object(JSON.parse(source));
+        if (parsed)
+            return parsed;
+    }
+    catch {
+        // Return one typed error without reflecting untrusted file contents.
+    }
+    throw new InventoryParseError('invalid_input');
+}
+function purl(type, name, version) {
+    const parts = name.split('/').map((part) => encodeURIComponent(part));
+    return `pkg:${type}/${parts.join('/')}@${encodeURIComponent(version)}`;
+}
+function passive_inventory_finalize(scanId, root, manifestPath, extractorVersion, dependencies, edges, missingReasons) {
+    const normalized = dependencies.map((item) => DependencyOccurrenceSchema.parse(item));
+    const digest = passive_inventory_hash(canonicalInventoryJson(root, normalized, edges));
+    const linked = edges.map((edge) => ({ ...edge, inventoryDigest: digest }));
+    const unresolved = normalized.some((item) => item.versionStatus === 'unresolved');
+    const unknown = normalized.some((item) => item.directness === 'unknown');
+    const gaps = [...new Set(missingReasons)].slice(0, 100);
+    const state = gaps.length > 0 || unknown
+        ? 'partial'
+        : unresolved
+            ? 'unresolved'
+            : 'complete';
+    const summary = InventorySummarySchema.parse({
+        scanId,
+        root,
+        digest,
+        extractorVersion,
+        state,
+        directCount: normalized.filter((item) => item.directness === 'direct')
+            .length,
+        transitiveCount: normalized.filter((item) => item.directness === 'transitive').length,
+        unknownCount: normalized.filter((item) => item.directness === 'unknown')
+            .length,
+        missingReasons: gaps,
+    });
+    // The manifest path is validated even for a graph with no dependencies.
+    common_RepositoryPathSchema.parse(manifestPath);
+    return { summary, dependencies: normalized, edges: linked };
+}
+function main_options(input) {
+    RootPathSchema.parse(input.root);
+    common_RepositoryPathSchema.parse(input.manifestPath);
+    return input;
+}
+/** npm package-lock / shrinkwrap v2-v3 only. Does not run npm or scripts. */
+function parseNpmLock(source, input) {
+    const { scanId, root, manifestPath } = main_options(input);
+    const lock = parseJson(source);
+    if (![2, 3].includes(Number(lock.lockfileVersion)) ||
+        !passive_inventory_object(lock.packages)) {
+        throw new InventoryParseError('unsupported_format');
+    }
+    const packages = passive_inventory_record(lock.packages);
+    const rootPackage = passive_inventory_object(packages['']);
+    if (!rootPackage)
+        throw new InventoryParseError('unsupported_format');
+    const rootDirect = new Set([
+        ...Object.keys(passive_inventory_record(rootPackage.dependencies)),
+        ...Object.keys(passive_inventory_record(rootPackage.devDependencies)),
+        ...Object.keys(passive_inventory_record(rootPackage.optionalDependencies)),
+    ]);
+    const paths = new Map();
+    const missing = [];
+    for (const [path, raw] of Object.entries(packages)) {
+        if (!path || !path.includes('node_modules/'))
+            continue;
+        const value = passive_inventory_object(raw);
+        if (!value || value.link === true) {
+            missing.push('linked_or_invalid_package');
+            continue;
+        }
+        const name = passive_inventory_text(value.name) ?? path.slice(path.lastIndexOf('node_modules/') + 13);
+        if (!name || !passive_inventory_text(value.version)) {
+            missing.push('missing_exact_version');
+            continue;
+        }
+        paths.set(path, {
+            id: uuidFor(`${path}\0${name}\0${value.version}`),
+            name,
+            value,
+        });
+    }
+    if (paths.size > 100_000)
+        throw new InventoryParseError('size_limit');
+    const inbound = new Set();
+    const edges = [];
+    const resolve = (from, name) => {
+        let current = from;
+        while (current) {
+            const candidate = `${current}/node_modules/${name}`;
+            if (paths.has(candidate))
+                return candidate;
+            const cut = current.lastIndexOf('/node_modules/');
+            current = cut < 0 ? '' : current.slice(0, cut);
+        }
+        const top = `node_modules/${name}`;
+        return paths.has(top) ? top : undefined;
+    };
+    for (const [path, item] of paths) {
+        for (const name of Object.keys(passive_inventory_record(item.value.dependencies))) {
+            const child = resolve(path, name);
+            if (!child) {
+                missing.push('unresolved_dependency_edge');
+                continue;
+            }
+            inbound.add(child);
+            edges.push({
+                inventoryDigest: '0'.repeat(64),
+                root,
+                parentId: item.id,
+                childId: paths.get(child).id,
+                relation: 'requires',
+            });
+        }
+    }
+    for (const name of rootDirect) {
+        if (!paths.has(`node_modules/${name}`))
+            missing.push('unresolved_root_dependency');
+    }
+    const dependencies = [...paths].map(([path, item]) => {
+        const version = passive_inventory_text(item.value.version);
+        const directness = path === `node_modules/${item.name}` && rootDirect.has(item.name)
+            ? 'direct'
+            : inbound.has(path)
+                ? 'transitive'
+                : 'unknown';
+        return {
+            id: item.id,
+            root,
+            manifestPath,
+            ecosystem: 'npm',
+            name: item.name,
+            purl: purl('npm', item.name, version),
+            exactVersion: version,
+            versionStatus: 'resolved',
+            directness,
+            scope: item.value.dev === true
+                ? 'development'
+                : item.value.optional === true
+                    ? 'optional'
+                    : 'runtime',
+            evidence: 'lockfile',
+        };
+    });
+    return passive_inventory_finalize(scanId, root, manifestPath, 'npm-lock-v2-v3-1', dependencies, edges, missing);
+}
+/** Composer lock v1-v3 with a separate root composer.json for directness. */
+function parseComposerLock(lockSource, manifestSource, input) {
+    const { scanId, root, manifestPath } = main_options(input);
+    const lock = parseJson(lockSource);
+    const normal = Array.isArray(lock.packages) ? lock.packages : undefined;
+    const development = Array.isArray(lock['packages-dev'])
+        ? lock['packages-dev']
+        : [];
+    if (!normal)
+        throw new InventoryParseError('unsupported_format');
+    const manifest = manifestSource ? parseJson(manifestSource) : undefined;
+    const direct = new Set([
+        ...Object.keys(passive_inventory_record(manifest?.require)),
+        ...Object.keys(passive_inventory_record(manifest?.['require-dev'])),
+    ]);
+    const packageRows = [
+        ...normal.map((value) => ({ value, dev: false })),
+        ...development.map((value) => ({ value, dev: true })),
+    ];
+    if (packageRows.length > 100_000)
+        throw new InventoryParseError('size_limit');
+    const byName = new Map();
+    const missing = manifest ? [] : ['missing_root_manifest'];
+    for (const row of packageRows) {
+        const value = passive_inventory_object(row.value);
+        const name = passive_inventory_text(value?.name);
+        const version = passive_inventory_text(value?.version);
+        if (!name || !version || !name.includes('/')) {
+            missing.push('invalid_package_identity');
+            continue;
+        }
+        if (byName.has(name)) {
+            missing.push('duplicate_package_name');
+            continue;
+        }
+        byName.set(name, {
+            id: uuidFor(`${name}\0${version}`),
+            version,
+            require: passive_inventory_record(value?.require),
+            dev: row.dev,
+        });
+    }
+    const inbound = new Set();
+    const edges = [];
+    for (const item of byName.values()) {
+        for (const required of Object.keys(item.require)) {
+            if (!required.includes('/'))
+                continue;
+            const child = byName.get(required);
+            if (!child) {
+                missing.push('unresolved_dependency_edge');
+                continue;
+            }
+            inbound.add(required);
+            edges.push({
+                inventoryDigest: '0'.repeat(64),
+                root,
+                parentId: item.id,
+                childId: child.id,
+                relation: 'requires',
+            });
+        }
+    }
+    for (const name of direct) {
+        if (name.includes('/') && !byName.has(name))
+            missing.push('unresolved_root_dependency');
+    }
+    const dependencies = [...byName].map(([name, item]) => ({
+        id: item.id,
+        root,
+        manifestPath,
+        ecosystem: 'Packagist',
+        name,
+        purl: purl('composer', name, item.version),
+        exactVersion: item.version,
+        versionStatus: 'resolved',
+        directness: direct.has(name)
+            ? 'direct'
+            : inbound.has(name)
+                ? 'transitive'
+                : 'unknown',
+        scope: item.dev ? 'development' : 'runtime',
+        evidence: 'lockfile',
+    }));
+    return passive_inventory_finalize(scanId, root, manifestPath, 'composer-lock-1', dependencies, edges, missing);
+}
+/** CI-supplied CycloneDX JSON SBOM, including Maven/Scala graphs. */
+function parseCycloneDxMaven(source, input) {
+    const { scanId, root, manifestPath } = main_options(input);
+    const bom = parseJson(source);
+    if (bom.bomFormat !== 'CycloneDX' || !Array.isArray(bom.components)) {
+        throw new InventoryParseError('unsupported_format');
+    }
+    if (bom.components.length > 100_000)
+        throw new InventoryParseError('size_limit');
+    const rootRef = passive_inventory_text(passive_inventory_object(passive_inventory_record(bom.metadata).component)?.['bom-ref']);
+    const byRef = new Map();
+    const missing = [];
+    for (const raw of bom.components) {
+        const component = passive_inventory_object(raw);
+        const ref = passive_inventory_text(component?.['bom-ref']);
+        const purlValue = passive_inventory_text(component?.purl);
+        const match = purlValue?.match(/^pkg:maven\/([^/]+)\/([^@?]+)@([^?]+)(?:\?.*)?$/);
+        if (!ref || !match) {
+            missing.push('unsupported_maven_component');
+            continue;
+        }
+        let name;
+        let version;
+        try {
+            name = `${decodeURIComponent(match[1])}:${decodeURIComponent(match[2])}`;
+            version = decodeURIComponent(match[3]);
+        }
+        catch {
+            missing.push('invalid_package_identity');
+            continue;
+        }
+        if (byRef.has(ref)) {
+            missing.push('duplicate_bom_ref');
+            continue;
+        }
+        byRef.set(ref, {
+            id: uuidFor(`${ref}\0${purlValue}`),
+            root,
+            manifestPath,
+            ecosystem: 'Maven',
+            name,
+            purl: purlValue,
+            exactVersion: version,
+            versionStatus: 'resolved',
+            directness: 'unknown',
+            scope: 'unknown',
+            evidence: 'sbom',
+        });
+    }
+    const direct = new Set();
+    const inbound = new Set();
+    const edges = [];
+    const graph = Array.isArray(bom.dependencies) ? bom.dependencies : undefined;
+    if (!graph || !rootRef)
+        missing.push('missing_resolved_graph');
+    for (const raw of graph ?? []) {
+        const row = passive_inventory_object(raw);
+        const ref = passive_inventory_text(row?.ref);
+        const children = Array.isArray(row?.dependsOn) ? row.dependsOn : [];
+        if (!ref)
+            continue;
+        for (const childRef of children) {
+            if (typeof childRef !== 'string')
+                continue;
+            if (ref === rootRef) {
+                direct.add(childRef);
+                continue;
+            }
+            const parent = byRef.get(ref);
+            const child = byRef.get(childRef);
+            if (!parent || !child) {
+                missing.push('unresolved_dependency_edge');
+                continue;
+            }
+            inbound.add(childRef);
+            edges.push({
+                inventoryDigest: '0'.repeat(64),
+                root,
+                parentId: parent.id,
+                childId: child.id,
+                relation: 'requires',
+            });
+        }
+    }
+    const dependencies = [...byRef].map(([ref, item]) => ({
+        ...item,
+        directness: direct.has(ref)
+            ? 'direct'
+            : inbound.has(ref)
+                ? 'transitive'
+                : 'unknown',
+    }));
+    return passive_inventory_finalize(scanId, root, manifestPath, 'cyclonedx-maven-json-1', dependencies, edges, missing);
+}
+//# sourceMappingURL=passive-inventory.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/sca/workspace.js
+
+
+
+
+
+
+const maxFileBytes = 10 * 1024 * 1024;
+const supported = new Set([
+    'package-lock.json',
+    'npm-shrinkwrap.json',
+    'composer.lock',
+]);
+async function readBounded(workspace, path, signal) {
+    common_RepositoryPathSchema.parse(path);
+    const absolute = (0,external_node_path_.resolve)(workspace, ...path.split('/'));
+    if (!absolute.startsWith(`${(0,external_node_path_.resolve)(workspace)}${external_node_path_.sep}`)) {
+        throw new InventoryParseError('invalid_input');
+    }
+    const handle = await (0,promises_namespaceObject.open)(absolute, external_node_fs_.constants.O_RDONLY | external_node_fs_.constants.O_NOFOLLOW);
+    try {
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.size > maxFileBytes) {
+            throw new InventoryParseError('size_limit');
+        }
+        const chunks = [];
+        let bytes = 0;
+        while (true) {
+            if (signal.aborted)
+                throw new InventoryParseError('invalid_input');
+            const buffer = Buffer.allocUnsafe(64 * 1024);
+            const read = await handle.read(buffer, 0, buffer.length, null);
+            if (read.bytesRead === 0)
+                break;
+            bytes += read.bytesRead;
+            if (bytes > maxFileBytes)
+                throw new InventoryParseError('size_limit');
+            chunks.push(buffer.subarray(0, read.bytesRead));
+        }
+        return Buffer.concat(chunks, bytes).toString('utf8');
+    }
+    finally {
+        await handle.close();
+    }
+}
+function gap(root, path, cause) {
+    if (cause instanceof InventoryParseError) {
+        return {
+            root,
+            path,
+            reason: cause.code === 'size_limit' ? 'budget_exceeded' : 'parse_error',
+            detailCode: cause.code,
+        };
+    }
+    return { root, path, reason: 'parse_error', detailCode: 'unreadable_input' };
+}
+/** CI-local passive inventory; reads bounded files and never runs package managers. */
+async function scanPassiveScaWorkspace(workspace, scanId, options = {}) {
+    const signal = options.signal ?? new AbortController().signal;
+    if (signal.aborted)
+        throw new Error('Passive SCA scan cancelled');
+    const discovery = options.discovery ?? (await discoverRepository(workspace));
+    if (signal.aborted)
+        throw new Error('Passive SCA scan cancelled');
+    const roots = new Map();
+    for (const item of discovery.roots)
+        roots.set(item.path, { inventories: [], gaps: [] });
+    if (roots.size === 0)
+        roots.set('.', { inventories: [], gaps: [] });
+    for (const item of discovery.roots) {
+        const result = roots.get(item.path);
+        const names = new Map(item.lockfiles.map((path) => [(0,external_node_path_.basename)(path), path]));
+        const npm = names.get('npm-shrinkwrap.json') ?? names.get('package-lock.json');
+        const composer = names.get('composer.lock');
+        const selected = [npm, composer].filter((path) => Boolean(path));
+        for (const path of selected) {
+            try {
+                const source = await readBounded(workspace, path, signal);
+                const input = { scanId, root: item.path, manifestPath: path };
+                const inventory = (0,external_node_path_.basename)(path) === 'composer.lock'
+                    ? parseComposerLock(source, item.manifests.includes(`${(0,external_node_path_.dirname)(path)}/composer.json`)
+                        ? await readBounded(workspace, `${(0,external_node_path_.dirname)(path)}/composer.json`, signal)
+                        : item.manifests.includes('composer.json')
+                            ? await readBounded(workspace, 'composer.json', signal)
+                            : undefined, input)
+                    : parseNpmLock(source, input);
+                result.inventories.push(inventory);
+            }
+            catch (cause) {
+                if (signal.aborted)
+                    throw new Error('Passive SCA scan cancelled');
+                result.gaps.push(gap(item.path, path, cause));
+            }
+        }
+        for (const path of item.lockfiles) {
+            if (!supported.has((0,external_node_path_.basename)(path))) {
+                result.gaps.push({
+                    root: item.path,
+                    path,
+                    reason: 'unsupported_manifest',
+                });
+            }
+        }
+        if (selected.length === 0 &&
+            item.lockfiles.length === 0 &&
+            item.manifests.length > 0) {
+            result.gaps.push({ root: item.path, reason: 'unsupported_manifest' });
+        }
+    }
+    for (const input of options.mavenBoms ?? []) {
+        RootPathSchema.parse(input.root);
+        common_RepositoryPathSchema.parse(input.path);
+        const result = roots.get(input.root);
+        if (!result ||
+            (input.root !== '.' && !input.path.startsWith(`${input.root}/`))) {
+            throw new InventoryParseError('invalid_input');
+        }
+        try {
+            const source = await readBounded(workspace, input.path, signal);
+            result.inventories.push(parseCycloneDxMaven(source, {
+                scanId,
+                root: input.root,
+                manifestPath: input.path,
+            }));
+        }
+        catch (cause) {
+            if (signal.aborted)
+                throw new Error('Passive SCA scan cancelled');
+            result.gaps.push(gap(input.root, input.path, cause));
+        }
+    }
+    return {
+        discovery,
+        roots: [...roots].map(([root, value]) => ({ root, ...value })),
+    };
+}
+//# sourceMappingURL=workspace.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/sca/ci-runner.js
+
+
+
+
+
+const sha256 = (value) => (0,external_node_crypto_.createHash)('sha256').update(value).digest('hex');
+const profileId = 'sca_passive';
+const scannerId = 'passive_sca';
+const adapterVersion = '1';
+const maxChunkBytes = 900_000;
+const PlanResponseSchema = strictObject({
+    executions: array(strictObject({
+        id: schemas_uuid(),
+        taskKey: schemas_string(),
+        rootKey: schemas_string(),
+        scannerId: schemas_string(),
+        family: schemas_string(),
+        status: schemas_string(),
+    })),
+});
+const ReceiptSchema = strictObject({
+    receipt: schemas_string().regex(/^[a-f0-9]{64}$/),
+    reused: schemas_boolean(),
+});
+const CompleteResponseSchema = strictObject({
+    lifecycle: schemas_string(),
+    gateStatus: schemas_string(),
+    coverage: SecurityCoverageSchema,
+    stateVersion: schemas_number(),
+    reused: schemas_boolean(),
+});
+function payloadBytes(payload) {
+    return Buffer.byteLength(JSON.stringify(payload));
+}
+/** Splits graph records without dropping edges or violating the upload cap. */
+function inventoryChunks(root) {
+    const chunks = [];
+    for (const inventory of root.inventories) {
+        let current = {
+            observations: [],
+            inventories: [inventory.summary],
+        };
+        const flush = () => {
+            chunks.push(current);
+            current = { observations: [] };
+        };
+        const append = (key, entry, maxItems) => {
+            const list = (current[key] ?? []);
+            const candidate = { ...current, [key]: [...list, entry] };
+            if (list.length >= maxItems || payloadBytes(candidate) > maxChunkBytes) {
+                flush();
+            }
+            const next = {
+                ...current,
+                [key]: [...(current[key] ?? []), entry],
+            };
+            if (payloadBytes(next) > maxChunkBytes)
+                throw new Error('SCA record exceeds upload budget');
+            current = next;
+        };
+        for (const occurrence of inventory.dependencies) {
+            append('dependencies', {
+                inventoryDigest: inventory.summary.digest,
+                occurrence,
+            }, 500);
+        }
+        for (const edge of inventory.edges)
+            append('edges', edge, 1000);
+        flush();
+    }
+    return chunks;
+}
+function coverage(root, discoveryGaps) {
+    const gaps = root.gaps.map((gap) => ({ ...gap }));
+    for (const inventory of root.inventories) {
+        if (inventory.summary.state !== 'complete') {
+            gaps.push({
+                root: root.root,
+                path: inventory.dependencies[0]?.manifestPath,
+                reason: 'unresolved_dependencies',
+                detailCode: inventory.summary.state,
+            });
+        }
+    }
+    for (const gap of discoveryGaps) {
+        if (root.root !== '.' && !gap.path.startsWith(`${root.root}/`))
+            continue;
+        gaps.push({
+            root: root.root,
+            path: gap.path,
+            reason: gap.reason === 'file_too_large' || gap.reason.endsWith('_limit')
+                ? 'budget_exceeded'
+                : 'excluded',
+            detailCode: gap.reason,
+        });
+    }
+    if (root.inventories.length === 0 && gaps.length === 0) {
+        gaps.push({ root: root.root, reason: 'unsupported_manifest' });
+    }
+    if (gaps.length > 1000) {
+        gaps.length = 999;
+        gaps.push({
+            root: root.root,
+            reason: 'budget_exceeded',
+            detailCode: 'coverage_gap_limit',
+        });
+    }
+    return SecurityCoverageSchema.parse({
+        state: root.inventories.length === 0
+            ? 'none'
+            : gaps.length
+                ? 'partial'
+                : 'complete',
+        planned: 1,
+        completed: root.inventories.length > 0 && gaps.length === 0 ? 1 : 0,
+        gaps,
+    });
+}
+/** Opt-in CI protocol client for the passive SCA profile. */
+async function runPassiveScaCi(options) {
+    const fetcher = options.fetcher ?? fetch;
+    const base = (options.apiBaseUrl ?? 'https://api.qualitygate.dev').replace(/\/$/, '');
+    const endpoint = new URL(base);
+    if ((endpoint.protocol !== 'https:' &&
+        !(endpoint.protocol === 'http:' &&
+            ['localhost', '127.0.0.1'].includes(endpoint.hostname))) ||
+        endpoint.username ||
+        endpoint.password ||
+        endpoint.search ||
+        endpoint.hash) {
+        throw new Error('Security scan API URL must use HTTPS');
+    }
+    const discovery = await discoverRepository(options.workspace);
+    const authorization = SecurityAuthorizeRequestSchema.parse({
+        ...options.request,
+        discoveryDigest: sha256(JSON.stringify(discovery)),
+        requestedProfiles: [profileId],
+    });
+    const post = async (path, body, token, allowError = false) => {
+        const response = await fetcher(`${base}${path}`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                ...(token ? { authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify(body),
+            signal: options.signal
+                ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)])
+                : AbortSignal.timeout(30_000),
+        });
+        const raw = await response.json();
+        if (!response.ok && !allowError)
+            throw new Error(`Security scan API returned HTTP ${response.status}`);
+        return raw;
+    };
+    const allowed = SecurityAuthorizeResponseSchema.parse(await post('/v1/security/scans/authorize', authorization, undefined, true));
+    if (!allowed.allowed)
+        throw new Error(`Security scan authorization denied: ${allowed.reason}`);
+    if (allowed.effectiveProfiles.length !== 1 ||
+        allowed.effectiveProfiles[0] !== profileId) {
+        throw new Error('Passive SCA profile was not authorized alone');
+    }
+    if (discovery.scannedFiles > allowed.limits.maxFiles ||
+        discovery.scannedBytes > allowed.limits.maxRepositoryBytes) {
+        throw new Error('Security scan exceeds authorized repository budget');
+    }
+    const workspace = await scanPassiveScaWorkspace(options.workspace, allowed.scanId, {
+        discovery,
+        signal: options.signal,
+        mavenBoms: options.mavenBoms,
+    });
+    if (workspace.roots.length > 100)
+        throw new Error('SCA root count exceeds scan plan limit');
+    const tasks = workspace.roots.map((root) => ({
+        taskKey: `sca_${sha256(root.root).slice(0, 32)}`,
+        root: root.root,
+        scannerId,
+        profileId,
+        family: 'sca',
+        adapterVersion,
+        configDigest: allowed.configHash,
+    }));
+    const packed = new Map(workspace.roots.map((root) => [root.root, inventoryChunks(root)]));
+    const totalBytes = [...packed.values()]
+        .flat()
+        .reduce((sum, chunk) => sum + payloadBytes(chunk), 0);
+    if (totalBytes > allowed.limits.maxResultBytes ||
+        [...packed.values()].flat().length > 2048 ||
+        [...packed.values()].some((chunks) => chunks.length > 1024)) {
+        throw new Error('SCA inventory exceeds authorized upload budget');
+    }
+    const plan = PlanResponseSchema.parse(await post(`/v1/security/scans/${allowed.scanId}/plan`, { tasks }, allowed.capabilityToken));
+    const byTask = new Map(plan.executions.map((execution) => [execution.taskKey, execution]));
+    if (plan.executions.length !== tasks.length ||
+        byTask.size !== tasks.length ||
+        tasks.some((task) => {
+            const execution = byTask.get(task.taskKey);
+            return (!execution ||
+                execution.rootKey !== task.root ||
+                execution.scannerId !== scannerId ||
+                execution.family !== 'sca');
+        })) {
+        throw new Error('Security scan plan does not match the local workspace');
+    }
+    const results = [];
+    for (const root of workspace.roots) {
+        const taskKey = `sca_${sha256(root.root).slice(0, 32)}`;
+        const execution = byTask.get(taskKey);
+        const receipts = [];
+        const chunks = packed.get(root.root);
+        for (const [sequence, payload] of chunks.entries()) {
+            const chunk = SecurityChunkRequestSchema.parse({
+                ...payload,
+                attempt: 0,
+                sequence,
+                sha256: sha256(JSON.stringify(payload)),
+            });
+            const receipt = ReceiptSchema.parse(await post(`/v1/security/scans/${allowed.scanId}/executions/${execution.id}/chunks`, chunk, allowed.capabilityToken));
+            receipts.push(receipt.receipt);
+        }
+        const itemCoverage = coverage(root, discovery.gaps);
+        results.push({
+            executionId: execution.id,
+            status: root.inventories.length === 0
+                ? 'unavailable'
+                : 'succeeded',
+            coverage: itemCoverage,
+            receipts,
+        });
+    }
+    const completion = SecurityCompleteRequestSchema.parse({
+        executions: results,
+    });
+    const finished = CompleteResponseSchema.parse(await post(`/v1/security/scans/${allowed.scanId}/complete`, completion, allowed.capabilityToken));
+    return {
+        scanId: allowed.scanId,
+        lifecycle: finished.lifecycle,
+        coverage: finished.coverage,
+        gateStatus: finished.gateStatus,
+    };
+}
+//# sourceMappingURL=ci-runner.js.map
+;// CONCATENATED MODULE: ../security-engine/dist/index.js
+
+
+
+
+
+
+
+
+
+
+
+
+//# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ./src/repository-security.ts
+
+
+
+function repository_security_required(environment, name) {
+    const value = environment[name]?.trim();
+    if (!value)
+        throw new Error(`${name} is required for repository security scanning.`);
+    return value;
+}
+function stableIdempotencyKey(input) {
+    const hex = (0,external_node_crypto_.createHash)('sha256').update(input).digest('hex').slice(0, 32);
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+/** Called only when the Action's repository_security input is explicitly true. */
+async function runRepositorySecurity(prepared, options = {}) {
+    const environment = options.environment ?? process.env;
+    const apiKey = prepared.inputs.apiKey;
+    if (!apiKey) {
+        throw new Error('repository_security requires the api_key input.');
+    }
+    const oidcToken = await (options.requestIdentityToken ?? requestOidcToken)({
+        environment,
+    });
+    if (!oidcToken) {
+        throw new Error('repository_security requires GitHub id-token: write permission.');
+    }
+    const repo = repository_security_required(environment, 'GITHUB_REPOSITORY');
+    const commitSha = repository_security_required(environment, 'GITHUB_SHA');
+    const branch = repository_security_required(environment, 'GITHUB_REF');
+    const runId = repository_security_required(environment, 'GITHUB_RUN_ID');
+    const attempt = repository_security_required(environment, 'GITHUB_RUN_ATTEMPT');
+    const event = repository_security_required(environment, 'GITHUB_EVENT_NAME');
+    if (!['push', 'pull_request', 'schedule'].includes(event)) {
+        throw new Error('repository_security supports push, pull_request, and schedule events.');
+    }
+    if (prepared.context.repo !== repo ||
+        prepared.context.commitSha !== commitSha) {
+        throw new Error('GitHub repository context changed before security scanning.');
+    }
+    return (options.scan ?? runPassiveScaCi)({
+        workspace: repository_security_required(environment, 'GITHUB_WORKSPACE'),
+        apiBaseUrl: options.apiBaseUrl,
+        fetcher: options.fetcher,
+        request: {
+            protocolVersion: 1,
+            apiKey,
+            oidcToken,
+            provider: 'github',
+            repo,
+            commitSha,
+            branch,
+            trigger: event === 'schedule' ? 'scheduled' : 'ci',
+            idempotencyKey: stableIdempotencyKey(`${repo}\0${commitSha}\0${branch}\0${runId}\0${attempt}\0sca_passive`),
+        },
+    });
+}
+
 ;// CONCATENATED MODULE: ./src/run.ts
+
 
 
 
@@ -209724,11 +212018,39 @@ async function run_executePreparedRun(prepared, options = {}) {
     return executeRunnerPreparedRun(prepared, runnerOptions(options));
 }
 async function run_runQualityGate(options = {}) {
-    return runQualityGate({
+    let prepared;
+    const result = await runQualityGate({
         ...runnerOptions(options),
-        prepareRun: () => options.prepareRun?.() ?? prepare_prepareAuthorizedRun(options),
+        prepareRun: async () => {
+            prepared = await (options.prepareRun?.() ??
+                prepare_prepareAuthorizedRun(options));
+            return prepared;
+        },
         publishResult: (prepared, result) => (options.publishResult ?? publishActionResult)(prepared, result, options),
     });
+    if (prepared?.inputs.repositorySecurity) {
+        try {
+            const security = await runRepositorySecurity(prepared, {
+                ...options.security,
+                environment: options.security?.environment ?? options.environment,
+                apiBaseUrl: options.security?.apiBaseUrl ?? options.apiBaseUrl,
+                fetcher: options.security?.fetcher ?? options.fetcher,
+                requestIdentityToken: options.security?.requestIdentityToken ??
+                    options.requestIdentityToken,
+            });
+            console.info(`QualityGate repository security scan ${security.scanId}: ${security.lifecycle}, coverage ${security.coverage.state}, gate ${security.gateStatus}.`);
+            if (security.lifecycle !== 'completed' ||
+                security.coverage.state !== 'complete' ||
+                security.gateStatus !== 'pass') {
+                throw new Error('Repository security requires a completed scan, complete coverage, and a backend pass verdict.');
+            }
+        }
+        catch (cause) {
+            (options.setExitCode ?? ((code) => (process.exitCode = code)))(1);
+            throw cause;
+        }
+    }
+    return result;
 }
 
 ;// CONCATENATED MODULE: ./src/main.ts
