@@ -15343,10 +15343,10 @@ function url(params) {
     return core._url(ZodURL, params);
 }
 function httpUrl(params) {
-    return core._url(ZodURL, {
-        protocol: core.regexes.httpProtocol,
-        hostname: core.regexes.domain,
-        ...util.normalizeParams(params),
+    return _url(ZodURL, {
+        protocol: httpProtocol,
+        hostname: domain,
+        ...normalizeParams(params),
     });
 }
 const ZodEmoji = /*@__PURE__*/ $constructor("ZodEmoji", (inst, def) => {
@@ -17409,7 +17409,101 @@ const CollectedSignalsSchema = object({
 })
     .strict();
 //# sourceMappingURL=analysis.js.map
+;// CONCATENATED MODULE: ../shared/dist/ai-analysis.js
+
+const Text = schemas_string().trim().min(1).max(2000);
+const AiFindingSchema = object({
+    ruleId: schemas_enum(['alt-text-quality', 'content-intent-fit', 'reading-level']),
+    message: Text,
+    confidence: schemas_number().min(0).max(1),
+    selector: schemas_string().max(300).optional(),
+    evidenceId: schemas_string().max(30),
+})
+    .strict();
+const AiSuggestionSchema = object({
+    issueFingerprint: schemas_string().regex(/^[a-f0-9]{64}$/),
+    checkId: schemas_string().max(100),
+    issueIndex: schemas_number().int().nonnegative(),
+    explanation: Text,
+    fix: Text,
+    code: schemas_string().max(3000).nullable(),
+})
+    .strict();
+const AiCoverageSchema = object({
+    availableImages: schemas_number().int().nonnegative(),
+    sampledImages: schemas_number().int().min(0).max(5),
+    textChars: schemas_number().int().min(0).max(30000),
+    truncated: schemas_boolean(),
+    selectedIssues: schemas_number().int().min(0).max(20),
+    omittedIssues: schemas_number().int().nonnegative(),
+})
+    .strict();
+const AiReviewStatusSchema = schemas_enum([
+    'pending',
+    'completed',
+    'unavailable',
+    'not_applicable',
+]);
+const RunAiAnalysisSchema = object({
+    status: AiReviewStatusSchema,
+    kind: schemas_enum(['page_and_suggestions', 'suggestions']),
+    findings: array(AiFindingSchema).max(20),
+    suggestions: array(AiSuggestionSchema).max(20),
+    coverage: AiCoverageSchema,
+    completedAt: schemas_string().datetime().nullable(),
+    failureKind: schemas_enum([
+        'provider_failed',
+        'invalid_response',
+        'interrupted',
+        'collection_failed',
+        'entitlement_changed',
+        'insufficient_credits',
+    ])
+        .nullable(),
+    contentFitDecision: object({ probability: schemas_number().min(0).max(1) })
+        .strict()
+        .optional(),
+})
+    .strict();
+const AI_CREDIT_PACK_CENTS = [1000, 2500, 5000];
+const AI_CREDIT_MIN_CENTS = AI_CREDIT_PACK_CENTS[0];
+const AI_CREDIT_MAX_CENTS = 10_000;
+const AiCreditAmountCentsSchema = schemas_number()
+    .int()
+    .min(AI_CREDIT_MIN_CENTS)
+    .max(AI_CREDIT_MAX_CENTS);
+const AI_REVIEW_LIMIT_MICROS = 100_000;
+const AiCreditSummarySchema = object({
+    availableMicros: schemas_number().int().nonnegative(),
+    spentMicros: schemas_number().int().nonnegative(),
+    reviewLimitMicros: schemas_number().int().positive(),
+})
+    .strict();
+const AiReviewSettingsSchema = object({ automatic: schemas_boolean() })
+    .strict();
+const CiAiReviewSchema = object({
+    status: schemas_enum(['pending', 'available']),
+    url: httpUrl(),
+})
+    .strict();
+const CI_REPORT_WITH_AI_REVIEW = 'application/json; include=ai-review';
+/**
+ * Also asks for the comparison results (`comparison` on the report response).
+ * Every shipped adapter parses that response strictly, so the field is only
+ * sent to a client that names it here.
+ */
+const CI_REPORT_WITH_COMPARISON = 'application/json; include=ai-review,comparison';
+/** The `include=` parts of an Accept header the CI report route understands. */
+function acceptedReportIncludes(accept) {
+    const match = /^application\/json\s*;\s*include=([a-z,-]+)\s*$/i.exec(accept?.trim() ?? '');
+    return new Set((match?.[1] ?? '')
+        .toLowerCase()
+        .split(',')
+        .filter((part) => part !== ''));
+}
+//# sourceMappingURL=ai-analysis.js.map
 ;// CONCATENATED MODULE: ../shared/dist/contract.js
+
 
 
 const CiProviderSchema = schemas_enum(['github', 'gitlab', 'bitbucket']);
@@ -17425,6 +17519,7 @@ const BundleIdSchema = schemas_enum([
     'security',
     'links',
     'full',
+    'full-runtime',
     'perf',
     'secrets-exposure',
     'geo',
@@ -17439,6 +17534,7 @@ const CheckIdSchema = schemas_enum([
     'secrets-exposure',
     'geo',
     'seo-deep',
+    'runtime-errors',
 ]);
 // Which checks a bundle runs. The backend validates uploaded results against
 // this without importing `core`, which would drag Playwright onto the server.
@@ -17454,6 +17550,16 @@ const contract_BUNDLE_CHECK_IDS = {
     // Ordered cheapest-first: the three document reads finish before the link check
     // starts spending time on the network.
     full: ['a11y', 'seo', 'security-headers', 'broken-links'],
+    // `full` plus browser runtime errors, still one page load. A separate id,
+    // because adding a check to `full` would reject uploads from every pinned
+    // adapter that still runs four checks.
+    'full-runtime': [
+        'a11y',
+        'seo',
+        'security-headers',
+        'broken-links',
+        'runtime-errors',
+    ],
     // Deliberately outside `full`: Lighthouse loads the page several times and
     // adds tens of seconds, so it is opted into rather than folded into every
     // complete run (QG-P5-05).
@@ -17501,11 +17607,25 @@ const contract_FailOnSchema = object({
     mode: FailOnModeSchema.optional(),
 })
     .strict();
+/**
+ * A Git branch name as CI reports it. Deliberately loose about which
+ * characters Git allows, but never empty, never a path escape, never a
+ * revision expression.
+ */
+const BranchNameSchema = schemas_string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^(?!\/)(?!.*\.\.)(?!.*\/$)[^\s~^:?*[\\]+$/, 'must be a Git branch name');
 const RequestedConfigSchema = object({
     bundle: BundleIdSchema,
     failOn: contract_FailOnSchema,
     engineVersion: schemas_string().trim().min(1).max(100),
     actionVersion: schemas_string().trim().min(1).max(100),
+    // The branch whose accepted state regression mode compares against, when
+    // it is not the project's default branch. Set by the server from the
+    // request's top-level `baselineBranch`; absent means the default branch.
+    baselineBranch: BranchNameSchema.optional(),
 })
     .strict();
 const DENY_REASONS = [
@@ -17561,6 +17681,10 @@ const AuthorizeRequestSchema = object({
     // is: only a scheduled run sends it. A backend that predates it drops the
     // key and counts the run as `ci`, which is the safe direction.
     trigger: AuthorizeRunTriggerSchema.optional(),
+    // QUALITYGATE_BASELINE_BRANCH. Top level rather than inside the strict
+    // `requestedConfig`, so a backend that predates it drops it and compares
+    // with the default branch, instead of rejecting the run.
+    baselineBranch: BranchNameSchema.optional(),
 })
     // Deliberately not `.strict()`. The Action ships and updates independently of
     // this server, so a strict request schema means every field a newer client
@@ -17738,8 +17862,32 @@ const CommentDeliverySchema = schemas_enum([
 ]);
 // Protocol 0: exactly what every shipped Action already parses.
 const LegacyReportResponseSchema = GateVerdictSchema;
+/** Earlier findings this run can be compared with, for display only. */
+const RunComparisonSchema = object({
+    // The accepted state of the baseline branch, the one regression mode gates
+    // against. Absent when there is no usable baseline.
+    baseline: object({
+        branch: BranchNameSchema,
+        results: array(CheckResultSchema),
+    })
+        .strict()
+        .optional(),
+    // The last reported run of the same pull request, page and bundle.
+    previousRun: object({
+        runId: schemas_string().uuid(),
+        createdAt: schemas_string().datetime({ offset: true }),
+        results: array(CheckResultSchema),
+    })
+        .strict()
+        .optional(),
+})
+    .strict();
 // Protocol 1: the verdict plus what the backend did with the comment.
 const AppCommentReportResponseSchema = GateVerdictSchema.extend({
+    // Only for a client that asked with CI_REPORT_WITH_COMPARISON. The verdict
+    // was computed from the same baseline; this only lets a CI comment show it.
+    comparison: RunComparisonSchema.optional(),
+    aiReview: CiAiReviewSchema.optional(),
     usage: UsageSummarySchema,
     commentDelivery: CommentDeliverySchema,
     // The analysed, authoritative results. Present only for analysis-tier
@@ -17759,6 +17907,24 @@ const FailResponseSchema = object({
     status: literal('failed'),
 })
     .strict();
+/** At most this many pages share one combined verdict, as QUALITYGATE_URLS allows. */
+const MAX_COMBINED_RUNS = 20;
+// A combined verdict over several reported runs of one CI step, such as the
+// pages of QUALITYGATE_URLS. Each run proves possession with its own upload
+// token; the server sums the stored findings and evaluates the gate once.
+const CombinedVerdictRequestSchema = object({
+    runs: array(object({
+        runId: schemas_string().uuid(),
+        uploadToken: schemas_string().trim().min(1).max(4096),
+    })
+        .strict())
+        .min(2)
+        .max(MAX_COMBINED_RUNS),
+})
+    .strict();
+const CombinedVerdictResponseSchema = GateVerdictSchema.extend({
+    runCount: schemas_number().int().min(2).max(MAX_COMBINED_RUNS),
+}).strict();
 //# sourceMappingURL=contract.js.map
 ;// CONCATENATED MODULE: ../shared/dist/product-catalog.js
 
@@ -17844,6 +18010,13 @@ const product_catalog_BUNDLE_DETAILS = {
         gate: 'Critical or serious findings from any of those four checks.',
         note: 'One run. Performance, AI search, site crawl and exposed secrets are separate bundles.',
     },
+    'full-runtime': {
+        name: 'Full check plus runtime errors',
+        summary: 'Everything in full, plus browser console errors, uncaught exceptions and failed requests.',
+        coverage: 'Combines accessibility, on-page SEO, security headers, broken links and runtime errors in one page load.',
+        gate: 'Critical or serious findings from any of those five checks, including uncaught exceptions and failed scripts or stylesheets.',
+        note: 'One run. Use QUALITYGATE_IGNORE for known environment differences, such as a CDN the test host does not run.',
+    },
     perf: {
         name: 'Performance',
         summary: 'Lighthouse on simulated mobile, median of three loads. Adds 15 to 30 seconds.',
@@ -17884,7 +18057,14 @@ const BUNDLE_GROUPS = [
         id: 'release-quality',
         name: 'Release quality',
         description: 'Page SEO, security headers, broken links and exposed credentials. full combines accessibility, SEO, security and links; advanced scans run separately.',
-        bundleIds: ['seo', 'security', 'links', 'full', 'secrets-exposure'],
+        bundleIds: [
+            'seo',
+            'security',
+            'links',
+            'full',
+            'full-runtime',
+            'secrets-exposure',
+        ],
     },
     {
         id: 'performance-search',
@@ -17896,7 +18076,7 @@ const BUNDLE_GROUPS = [
 const PRODUCT_FEATURES = [
     {
         id: 'scans',
-        name: 'Ten scan bundles',
+        name: 'Eleven scan bundles',
         description: 'Choose accessibility, release quality, performance and search visibility checks for each URL.',
         docsPath: '/docs/bundles',
     },
@@ -18265,7 +18445,7 @@ function distinct(issues) {
  * backlog it cannot prove the request created. The flag exists so a report can
  * say "no baseline yet" instead of claiming a measured zero.
  */
-function diffScan(current, baseline) {
+function diff_diffScan(current, baseline) {
     const currentIssues = distinct(fingerprintResults(current));
     if (baseline === undefined) {
         return {
@@ -18362,7 +18542,7 @@ const DEFAULT_FAIL_ON = {
 function gate_emptyIssueCounts() {
     return { critical: 0, serious: 0, moderate: 0, minor: 0 };
 }
-function countIssues(results) {
+function gate_countIssues(results) {
     return results.reduce((counts, result) => {
         for (const issue of result.issues)
             counts[issue.severity] += 1;
@@ -18392,7 +18572,7 @@ function evaluateGate(results, failOn = DEFAULT_FAIL_ON, diff) {
     if (results.length === 0) {
         throw new TypeError('Gate evaluation requires at least one check result');
     }
-    const issueCounts = countIssues(results);
+    const issueCounts = gate_countIssues(results);
     const regression = failOn.mode === 'regression';
     if (regression && diff === undefined) {
         throw new TypeError('Regression gating requires a diff');
@@ -18555,6 +18735,7 @@ const ProjectSummarySchema = object({
     accessVerification: AccessVerificationSchema,
     allowedDomains: array(schemas_string().min(1)).min(1),
     defaultBranch: schemas_string().trim().min(1).max(255),
+    hasReportedCiRun: schemas_boolean().optional(),
     id: schemas_string().uuid(),
     installationId: schemas_string().uuid().nullable(),
     keys: array(ApiKeyMetadataSchema),
@@ -18607,6 +18788,7 @@ const ProjectErrorCodeSchema = schemas_enum(PROJECT_ERROR_CODES);
 
 
 
+
 const RUN_SCORE_VERSION = 'finding-penalty-v1';
 const RunAttemptStatusSchema = schemas_enum([
     'reserved',
@@ -18616,6 +18798,7 @@ const RunAttemptStatusSchema = schemas_enum([
 ]);
 const RunScoreVersionSchema = literal(RUN_SCORE_VERSION);
 const ProjectRunHistoryItemSchema = object({
+    aiReviewStatus: AiReviewStatusSchema.optional(),
     branch: schemas_string().nullable(),
     bundle: BundleIdSchema.nullable(),
     commitSha: schemas_string().nullable(),
@@ -18651,6 +18834,7 @@ const ProjectRunHistoryItemSchema = object({
 const ProjectRunHistoryIdentitySchema = object({
     defaultBranch: schemas_string(),
     id: schemas_string().uuid(),
+    pipelineSetupComplete: schemas_boolean().optional(),
     provider: CiProviderSchema,
     repo: RepositoryPathSchema,
 })
@@ -18662,12 +18846,17 @@ function datetimeOrderKey(timestamp) {
     const seconds = whole.length === 16 ? `${whole}:00` : whole;
     return `${seconds}.${fraction.replace(/0+$/, '')}`;
 }
+// Request the count explicitly so either version can deploy first.
+const RUN_HISTORY_WITH_TOTAL = 'application/json; include=run-count';
+const RUN_HISTORY_WITH_SETUP = 'application/json; include=run-count-and-setup';
+const RUN_HISTORY_WITH_AI = 'application/json; include=run-count-setup-and-ai-review';
 const ProjectRunHistorySchema = object({
     availableBundles: array(BundleIdSchema),
     defaultBundle: BundleIdSchema.nullable(),
     items: array(ProjectRunHistoryItemSchema).max(20),
     nextCursor: schemas_string().nullable(),
     project: ProjectRunHistoryIdentitySchema,
+    totalRuns: schemas_number().int().nonnegative().optional(),
 })
     .strict()
     .superRefine((history, context) => {
@@ -18872,56 +19061,6 @@ const ReportShareListSchema = object({ shares: array(ReportShareSchema) })
 const CreatedReportShareSchema = object({ share: ReportShareSchema, url: schemas_string().url() })
     .strict();
 //# sourceMappingURL=report-sharing.js.map
-;// CONCATENATED MODULE: ../shared/dist/ai-analysis.js
-
-const Text = schemas_string().trim().min(1).max(2000);
-const AiFindingSchema = object({
-    ruleId: schemas_enum(['alt-text-quality', 'content-intent-fit', 'reading-level']),
-    message: Text,
-    confidence: schemas_number().min(0).max(1),
-    selector: schemas_string().max(300).optional(),
-    evidenceId: schemas_string().max(30),
-})
-    .strict();
-const AiSuggestionSchema = object({
-    issueFingerprint: schemas_string().regex(/^[a-f0-9]{64}$/),
-    checkId: schemas_string().max(100),
-    issueIndex: schemas_number().int().nonnegative(),
-    explanation: Text,
-    fix: Text,
-    code: schemas_string().max(3000).nullable(),
-})
-    .strict();
-const AiCoverageSchema = object({
-    availableImages: schemas_number().int().nonnegative(),
-    sampledImages: schemas_number().int().min(0).max(5),
-    textChars: schemas_number().int().min(0).max(30000),
-    truncated: schemas_boolean(),
-    selectedIssues: schemas_number().int().min(0).max(20),
-    omittedIssues: schemas_number().int().nonnegative(),
-})
-    .strict();
-const RunAiAnalysisSchema = object({
-    status: schemas_enum(['pending', 'completed', 'unavailable', 'not_applicable']),
-    kind: schemas_enum(['page_and_suggestions', 'suggestions']),
-    findings: array(AiFindingSchema).max(20),
-    suggestions: array(AiSuggestionSchema).max(20),
-    coverage: AiCoverageSchema,
-    completedAt: schemas_string().datetime().nullable(),
-    failureKind: schemas_enum([
-        'provider_failed',
-        'invalid_response',
-        'interrupted',
-        'collection_failed',
-        'entitlement_changed',
-    ])
-        .nullable(),
-    contentFitDecision: object({ probability: schemas_number().min(0).max(1) })
-        .strict()
-        .optional(),
-})
-    .strict();
-//# sourceMappingURL=ai-analysis.js.map
 ;// CONCATENATED MODULE: ../shared/dist/run-detail.js
 
 
@@ -19834,6 +19973,7 @@ function aiReviewHtml(analysis, pdf) {
     if (!analysis)
         return '';
     const coverage = analysis.coverage;
+    const suggestionCount = analysis.suggestions.length;
     const warning = analysis.status === 'unavailable'
         ? '<p class="ai-warning">AI review unavailable. Automated findings remain available.</p>'
         : coverage.truncated || coverage.omittedIssues > 0
@@ -19843,7 +19983,10 @@ function aiReviewHtml(analysis, pdf) {
         .slice(0, pdf ? 5 : 20)
         .map((finding) => `<li><strong>${escapeText(finding.ruleId)}</strong><p>${escapeText(finding.message)}</p><p>Confidence: ${Math.round(finding.confidence * 100)}%</p>${finding.selector ? `<code>${escapeText(finding.selector)}</code>` : ''}</li>`)
         .join('');
-    return `<section class="check-section" aria-labelledby="ai-review"><h2 id="ai-review">AI review</h2><p>Advisory findings and suggested fixes. Human review required.</p>${warning}${analysis.status === 'pending' ? '<p>Preparing AI suggestions…</p>' : ''}${analysis.status === 'not_applicable' ? '<p>Not enough eligible evidence for an AI review.</p>' : ''}${analysis.status === 'completed' ? `<p>${coverage.sampledImages} of ${coverage.availableImages} images reviewed · ${coverage.textChars} text characters sampled · ${coverage.selectedIssues} issues selected for suggestions</p>${entries ? `<ul>${entries}</ul>` : '<p>No AI concerns recorded in the sampled evidence.</p>'}${pdf && analysis.findings.length > 5 ? '<p>Additional AI findings appear in the complete report.</p>' : ''}` : ''}</section>`;
+    const pageCoverage = analysis.kind === 'page_and_suggestions'
+        ? `<p>${coverage.sampledImages} of ${coverage.availableImages} images reviewed · ${coverage.textChars} text characters sampled</p>${entries ? `<ul>${entries}</ul>` : '<p>No AI concerns recorded in the sampled evidence.</p>'}`
+        : '';
+    return `<section class="check-section" aria-labelledby="ai-review"><h2 id="ai-review">AI review</h2><p>Advisory findings and suggested fixes. Human review required.</p>${warning}${analysis.status === 'pending' ? '<p>Preparing AI suggestions…</p>' : ''}${analysis.status === 'not_applicable' ? '<p>Not enough eligible evidence for an AI review.</p>' : ''}${analysis.status === 'completed' ? `${pageCoverage}<p>${suggestionCount} suggested ${suggestionCount === 1 ? 'fix' : 'fixes'} for ${coverage.selectedIssues} reviewed ${coverage.selectedIssues === 1 ? 'issue' : 'issues'}.</p>${pdf && analysis.findings.length > 5 ? '<p>Additional AI findings appear in the complete report.</p>' : ''}` : ''}</section>`;
 }
 function brandHtml(theme, whiteLabel) {
     const mark = theme.logoUrl === undefined
@@ -20025,8 +20168,8 @@ ${sharedView ? `${gateDecision}\n${scorePanel}` : `${scorePanel}\n${gateDecision
 <h2 id="severity-heading">Severity overview</h2>
 <dl class="severity-grid">${SEVERITIES.map((severity) => `<div><dt>${titleCase(severity)}</dt><dd>${input.summary.issueCounts[severity]}</dd></div>`).join('')}</dl>
 </section>
-<section class="findings-section" aria-labelledby="findings-heading"><h2 id="findings-heading">Complete findings</h2>${findingsNote}${findings}</section>
-${aiReviewHtml(input.analysis, options.profile === 'pdf-summary')}
+${input.analysis ? aiReviewHtml(input.analysis, options.profile === 'pdf-summary') + '\n' : ''}<section class="findings-section" aria-labelledby="findings-heading"><h2 id="findings-heading">Complete findings</h2>${findingsNote}${findings}</section>
+
 </main>
 <footer class="report-footer">
 <p>Generated by ${escapeText(checkedTheme.brandName)} at <time datetime="${escapeAttribute(input.generatedAt)}">${escapeText(input.generatedAt)}</time></p>
@@ -20225,7 +20368,7 @@ function scrub_scrubIssue(issue) {
             : { helpUrl: scrub_scrubUrl(issue.helpUrl) }),
     };
 }
-function scrubCheckResult(result) {
+function scrub_scrubCheckResult(result) {
     return {
         ...result,
         issues: result.issues.map(scrub_scrubIssue),
@@ -20238,6 +20381,7 @@ function scrub_scrubText(value) {
 //# sourceMappingURL=scrub.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/render.js
 
+
 const QUALITYGATE_COMMENT_MARKER = '<!-- qualitygate:comment-marker -->';
 // Bitbucket Cloud escapes raw HTML, so its marker is an unreferenced link
 // definition, which CommonMark renders as nothing.
@@ -20246,7 +20390,7 @@ const ACCESSIBILITY_DISCLAIMER = 'Automated accessibility checks are a starting 
 const SEO_DISCLAIMER = 'Automated SEO checks read what this page declares; they do not predict ranking.';
 const SECURITY_DISCLAIMER = 'Automated header checks read the response of one page; they are not a penetration test.';
 const LINKS_DISCLAIMER = 'Automated link checks request the links on one page once; a host that refuses automated clients is reported as unverified, not broken.';
-const PERFORMANCE_DISCLAIMER = 'Lighthouse measures one page under simulated mobile throttling and reports the median of several loads; field data from real visitors can differ.';
+const PERFORMANCE_DISCLAIMER = 'Lighthouse measures one page in the lab under simulated throttling, mobile unless desktop was chosen, and reports the median of several loads. Lab values, including Total Blocking Time as a stand-in for INP, are not field data from real visitors and can differ.';
 const SECRETS_EXPOSURE_DISCLAIMER = 'Credential checks read the scripts and JSON this page loads from its own origin; they cannot see server-side code, and a finding means the credential must be rotated.';
 const GEO_DISCLAIMER = 'GEO checks read what this site publishes to AI crawlers and score how quotable its passages are; they do not predict whether an AI engine will cite it.';
 const SEO_DEEP_DISCLAIMER = 'Deep SEO crawls a bounded slice of the site from this page; pages beyond the crawl limit are not checked.';
@@ -20304,6 +20448,11 @@ const BUNDLE_PRESENTATION = {
         label: 'Web quality',
         noun: 'web quality',
     },
+    'full-runtime': {
+        disclaimer: `${FULL_DISCLAIMER} Runtime errors are what the browser reported during one page load.`,
+        label: 'Web quality',
+        noun: 'web quality',
+    },
 };
 const NEUTRAL_PRESENTATION = {
     disclaimer: 'Automated checks are a starting point; they do not replace review.',
@@ -20326,6 +20475,7 @@ const render_CHECK_LABELS = {
     'secrets-exposure': 'Exposed credentials',
     geo: 'AI search readiness',
     'seo-deep': 'Deep SEO',
+    'runtime-errors': 'Runtime errors',
 };
 // Checks whose engine reports its own 0-100 score (ADR-0008), and how that
 // score is named. Only these scores are shown; any other check's score is not
@@ -20348,6 +20498,66 @@ const severityRank = {
     moderate: 2,
     minor: 3,
 };
+function isSeoSummary(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    const summary = value;
+    return (typeof summary.titleLength === 'number' &&
+        typeof summary.descriptionLength === 'number' &&
+        typeof summary.h1Count === 'number' &&
+        typeof summary.hreflangCount === 'number' &&
+        typeof summary.robots === 'string');
+}
+/** One line on what the page declares for search engines. */
+function seoSummaryLine(report) {
+    const summary = report.details?.seo;
+    if (!isSeoSummary(summary))
+        return undefined;
+    const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+    const parts = [
+        summary.title === null || summary.title === ''
+            ? 'no title'
+            : `title ${formatMessage(`"${summary.title}"`)} (${plural(summary.titleLength, 'character')})`,
+        summary.descriptionLength === 0
+            ? 'no meta description'
+            : `meta description ${plural(summary.descriptionLength, 'character')}`,
+        plural(summary.h1Count, 'h1'),
+        summary.lang ? `lang ${inlineCode(summary.lang)}` : 'no lang',
+        summary.canonical
+            ? `canonical <${scrubUrl(summary.canonical)}>`
+            : 'no canonical',
+        summary.robots === ''
+            ? 'robots: indexable'
+            : `robots ${inlineCode(summary.robots)}`,
+        plural(summary.hreflangCount, 'hreflang alternate'),
+    ];
+    return `SEO: ${parts.join(' · ')}`;
+}
+/**
+ * The render input for a report response's `comparison`, computed with the
+ * same fingerprints and diff the server gated with.
+ */
+function comparisonRenderInput(results, failOn, comparison) {
+    // Without a baseline, only regression mode has anything to say about it:
+    // that nothing could be compared yet.
+    const diff = comparison?.baseline !== undefined
+        ? diffScan(results, comparison.baseline.results)
+        : failOn.mode === 'regression'
+            ? diffScan(results, undefined)
+            : undefined;
+    const previous = comparison?.previousRun;
+    return {
+        ...(diff === undefined ? {} : { diff }),
+        ...(previous === undefined
+            ? {}
+            : {
+                previousRun: {
+                    diff: diffScan(results, previous.results),
+                    previousCounts: countIssues(previous.results),
+                },
+            }),
+    };
+}
 function assertNonnegativeInteger(value, name) {
     if (!Number.isInteger(value) || value < 0) {
         throw new RangeError(`${name} must be a non-negative integer`);
@@ -20378,6 +20588,7 @@ const TRUSTED_HELP_HOSTS = (/* unused pure expression or super */ null && ([
     ['dequeuniversity.com', '/rules/axe/'],
     ['developers.google.com', '/search/docs/'],
     ['developer.mozilla.org', '/en-US/docs/Web/HTTP/'],
+    ['developer.mozilla.org', '/en-US/docs/Web/JavaScript/Reference/Errors'],
 ]));
 function trustedHelpUrl(value) {
     if (value === undefined)
@@ -20453,7 +20664,7 @@ function sortedBySeverity(issues) {
  * reader otherwise has no way to see.
  */
 function allFindings(results, limit, multiCheck, truncatedHint) {
-    const lines = ['', '### All findings'];
+    const lines = [];
     let shown = 0;
     let total = 0;
     for (const result of results) {
@@ -20583,6 +20794,59 @@ function regressionSummary(diff) {
         ]
         : [line];
 }
+const SEVERITY_ROWS = (/* unused pure expression or super */ null && ([
+    ['critical', '🔴 Critical'],
+    ['serious', '🟠 Serious'],
+    ['moderate', '🟡 Moderate'],
+    ['minor', '🔵 Minor'],
+]));
+function signed(value) {
+    return value > 0 ? `+${value}` : String(value);
+}
+/**
+ * What changed since this comment was last written, so "4 serious, now 0"
+ * survives the edit. Issues are counted by fingerprint, as regression mode
+ * counts them; the table counts every finding.
+ */
+function previousRunSummary(comparison, current) {
+    const { counts } = comparison.diff;
+    const unchanged = counts.new === 0 &&
+        counts.fixed === 0 &&
+        SEVERITY_ROWS.every(([severity]) => comparison.previousCounts[severity] === current[severity]);
+    const line = `**Since the previous run** ${counts.new.toLocaleString('en-US')} new · ${counts.fixed.toLocaleString('en-US')} fixed · ${counts.existing.toLocaleString('en-US')} still open`;
+    if (unchanged)
+        return [`${line} · no change`, ''];
+    return [
+        line,
+        '',
+        '| Severity | Previous | Now | Change |',
+        '| --- | ---: | ---: | ---: |',
+        ...SEVERITY_ROWS.map(([severity, label]) => {
+            const before = comparison.previousCounts[severity];
+            const now = current[severity];
+            return `| ${label} | ${before} | ${now} | ${now === before ? '0' : `**${signed(now - before)}**`} |`;
+        }),
+        '',
+    ];
+}
+/** Fixed and new issues since the previous run, for the collapsed section. */
+function previousRunLists(comparison, limit, multiCheck) {
+    if (comparison === undefined)
+        return [];
+    const lines = [];
+    const list = (title, issues) => {
+        if (issues.length === 0)
+            return;
+        lines.push(`#### ${title} (${issues.length.toLocaleString('en-US')})`, ...topIssues(issues, limit).map((entry) => formatIssue(entry, multiCheck)), ...(issues.length > limit
+            ? [
+                `${(issues.length - limit).toLocaleString('en-US')} more not listed.`,
+            ]
+            : []), '');
+    };
+    list('New since the previous run', comparison.diff.newIssues);
+    list('Fixed since the previous run', comparison.diff.fixedIssues);
+    return lines;
+}
 function decisionLine(verdict, presentation, diff) {
     if (verdict.passed) {
         // In a comparison, "passed" means nothing got worse, which is a different
@@ -20600,13 +20864,77 @@ function decisionLine(verdict, presentation, diff) {
     }
     return `> ❌ ${verdict.failReason ?? 'Configured limits were exceeded.'}`;
 }
-function renderBody(input, flavor, target) {
+const HEADER_NAMES = {
+    'strict-transport-security': 'HSTS',
+    'content-security-policy': 'CSP',
+    'content-security-policy-report-only': 'CSP (report-only, not enforced)',
+    'x-frame-options': 'X-Frame-Options',
+    'x-content-type-options': 'X-Content-Type-Options',
+    'referrer-policy': 'Referrer-Policy',
+    'permissions-policy': 'Permissions-Policy',
+    'cross-origin-opener-policy': 'COOP',
+    'cross-origin-embedder-policy': 'COEP',
+    'cross-origin-resource-policy': 'CORP',
+};
+function statusText(status) {
+    return status === null ? 'no response' : String(status);
+}
+/**
+ * Where the scan actually looked. A redirect by locale or login otherwise
+ * leaves a reader guessing which page the findings belong to.
+ */
+function pageLoadLines(report) {
+    const page = report.page;
+    if (page === undefined)
+        return [`Scanned URL: <${scrubUrl(report.url)}>`];
+    const requested = scrubUrl(page.requestedUrl);
+    const final = scrubUrl(page.finalUrl);
+    const lines = page.redirects.length === 0 && requested === final
+        ? [`Scanned URL: <${final}> (HTTP ${statusText(page.status)})`]
+        : [
+            `Requested URL: <${requested}>`,
+            '',
+            `Final URL: <${final}>`,
+            '',
+            `Redirects: ${[...page.redirects.map((hop) => statusText(hop.status)), statusText(page.status)].map((status) => `\`${status}\``).join(' → ')}`,
+        ];
+    const ranHeaders = report.results.some(({ checkId }) => checkId === 'security-headers');
+    if (ranHeaders && page.securityHeaders !== undefined) {
+        lines.push('', page.securityHeaders.length === 0
+            ? 'Security headers present: none'
+            : `Security headers present: ${page.securityHeaders.map((name) => HEADER_NAMES[name] ?? safeRuleId(name)).join(', ')}`);
+    }
+    const seo = seoSummaryLine(report);
+    if (seo !== undefined)
+        lines.push('', seo);
+    if (ranHeaders && page.scriptPolicy !== undefined) {
+        for (const line of page.scriptPolicy) {
+            lines.push('', `Script policy: ${line.replace(/[<>@#|]/g, '')}`);
+        }
+    }
+    return lines;
+}
+function totalIssueCount(results) {
+    return results.reduce((total, result) => total + result.issues.length, 0);
+}
+function collapsible(flavor, summary, body, headingLevel = 3) {
+    // Bitbucket Cloud escapes raw HTML, so nothing there can collapse; a heading
+    // keeps the section findable instead.
+    return flavor === 'bitbucket'
+        ? [`${'#'.repeat(headingLevel)} ${summary}`, '', ...body]
+        : [
+            '<details>',
+            `<summary>${summary}</summary>`,
+            '',
+            ...body,
+            '',
+            '</details>',
+        ];
+}
+function renderParts(input, target, findingLimitDefault) {
     const limit = input.topIssueLimit ?? DEFAULT_TOP_ISSUE_LIMIT;
     assertNonnegativeInteger(limit, 'topIssueLimit');
-    const findingLimit = input.findingLimit ??
-        (target === 'comment'
-            ? DEFAULT_COMMENT_FINDING_LIMIT
-            : DEFAULT_SUMMARY_FINDING_LIMIT);
+    const findingLimit = input.findingLimit ?? findingLimitDefault;
     assertNonnegativeInteger(findingLimit, 'findingLimit');
     if (input.report.results.length === 0) {
         throw new TypeError('Expected at least one check result to render');
@@ -20626,22 +20954,74 @@ function renderBody(input, flavor, target) {
             ...topIssues(input.diff.existingIssues, limit),
         ].slice(0, limit)
         : topIssues(attributedIssues(input.report.results), limit);
-    const issueLines = selectedIssues.length === 0
-        ? ['No prioritized issues to show.']
-        : selectedIssues.map((entry) => formatIssue(entry, multiCheck));
-    // A single-check bundle would render a one-row table restating the severity
-    // table above it, so the breakdown appears only where it adds something.
-    const breakdownLines = multiCheck
-        ? ['', '### Findings by check', ...checkBreakdown(input.report.results)]
-        : [];
-    const totalIssues = input.report.results.reduce((total, result) => total + result.issues.length, 0);
-    // When the prioritized list already shows everything, a second copy of it
-    // would only make the comment longer.
-    const allFindingLines = totalIssues > selectedIssues.length
-        ? allFindings(input.report.results, findingLimit, multiCheck, target === 'comment'
+    const totalIssues = totalIssueCount(input.report.results);
+    const prioritized = selectedIssues.length === 0
+        ? []
+        : [
+            totalIssues > selectedIssues.length
+                ? `**Top ${selectedIssues.length} of ${totalIssues.toLocaleString('en-US')} findings**`
+                : `**${totalIssues === 1 ? 'Finding' : 'Findings'}**`,
+            ...selectedIssues.map((entry) => formatIssue(entry, multiCheck)),
+        ];
+    const hint = input.reportFile !== undefined
+        ? ` Every finding is in \`${input.reportFile.replace(/[`\s]/g, '')}\`, saved with this pipeline run.`
+        : target === 'comment'
             ? " The workflow run's job summary lists more."
-            : '')
+            : '';
+    // The full list is always there when the prioritized one leaves anything
+    // out, so no finding is hidden from the reader.
+    const findingLines = totalIssues > selectedIssues.length
+        ? [
+            `#### All findings (${totalIssues.toLocaleString('en-US')})`,
+            ...allFindings(input.report.results, findingLimit, multiCheck, hint),
+            '',
+        ]
         : [];
+    return {
+        decision: decisionLine(input.summary, presentation, input.diff),
+        headline: [
+            ...naturalScoreLines(input.report.results),
+            ...(input.aiReview
+                ? [
+                    input.aiReview.status === 'pending'
+                        ? `**AI review queued** · [View advisory findings when ready](<${input.aiReview.url}>)`
+                        : `**AI review available** · [Open this run to request suggested fixes](<${input.aiReview.url}>)`,
+                    '',
+                ]
+                : []),
+            ...(input.diff === undefined
+                ? []
+                : [...regressionSummary(input.diff), '']),
+            ...(input.previousRun === undefined
+                ? []
+                : previousRunSummary(input.previousRun, input.summary.issueCounts)),
+            ...severityTable(input.summary, input.failOn, input.diff),
+            ...(multiCheck
+                ? [
+                    '',
+                    '#### Findings by check',
+                    ...checkBreakdown(input.report.results),
+                ]
+                : []),
+        ],
+        prioritized,
+        details: [
+            ...previousRunLists(input.previousRun, Math.min(findingLimit, 20), multiCheck),
+            ...findingLines,
+            ...pageLoadLines(input.report),
+            '',
+            presentation.disclaimer,
+        ],
+        detailsSummary: findingLines.length > 0
+            ? `All ${totalIssues.toLocaleString('en-US')} findings and scan details`
+            : 'Scan details and limitations',
+    };
+}
+function renderBody(input, flavor, target) {
+    const parts = renderParts(input, target, target === 'comment'
+        ? DEFAULT_COMMENT_FINDING_LIMIT
+        : DEFAULT_SUMMARY_FINDING_LIMIT);
+    const presentation = presentationFor(input.report.bundleId);
     return [
         input.summary.passed
             ? '## ✅ QualityGate passed'
@@ -20649,28 +21029,89 @@ function renderBody(input, flavor, target) {
         '',
         `**${presentation.label}** · \`${input.report.bundleId}\` · [qualitygate.dev](https://qualitygate.dev/)`,
         '',
-        decisionLine(input.summary, presentation, input.diff),
+        parts.decision,
         '',
-        ...naturalScoreLines(input.report.results),
-        ...(input.diff === undefined ? [] : [...regressionSummary(input.diff), '']),
-        ...severityTable(input.summary, input.failOn, input.diff),
-        ...breakdownLines,
+        ...parts.headline,
         '',
         usageLine(input),
         '',
-        ...(flavor === 'bitbucket'
-            ? ['### Scan details and limitations']
-            : ['<details>', '<summary>Scan details and limitations</summary>']),
-        '',
-        `Scanned URL: <${scrubUrl(input.report.url)}>`,
-        '',
-        '### Prioritized issues',
-        ...issueLines,
-        ...allFindingLines,
-        '',
-        presentation.disclaimer,
-        ...(flavor === 'bitbucket' ? [] : ['', '</details>']),
+        ...(parts.prioritized.length === 0
+            ? []
+            : ['### Prioritized issues', ...parts.prioritized, '']),
+        ...collapsible(flavor, parts.detailsSummary, parts.details),
     ].join('\n');
+}
+function pageLabel(report) {
+    const url = scrubUrl(report.page?.requestedUrl ?? report.url);
+    try {
+        const parsed = new URL(url);
+        return `${parsed.pathname}${parsed.search}`;
+    }
+    catch {
+        return url;
+    }
+}
+/**
+ * Several pages scanned in one CI step, as one comment: a summary table first,
+ * then one section per page. Each page keeps its own server verdict; the run
+ * passes only when every page passed.
+ */
+function renderMultiBody(entries, flavor, target, combined) {
+    const [first] = entries;
+    if (first === undefined) {
+        throw new TypeError('Expected at least one scanned page to render');
+    }
+    const passed = combined?.passed ?? entries.every((entry) => entry.summary.passed);
+    const presentation = presentationFor(first.report.bundleId);
+    // Shared between the pages, so a long run still fits one comment.
+    const perPageLimit = Math.max(10, Math.floor((target === 'comment'
+        ? DEFAULT_COMMENT_FINDING_LIMIT * 2
+        : DEFAULT_SUMMARY_FINDING_LIMIT) / entries.length));
+    const failedCount = entries.filter((entry) => !entry.summary.passed).length;
+    const lines = [
+        passed ? '## ✅ QualityGate passed' : '## ❌ QualityGate needs attention',
+        '',
+        `**${presentation.label}** · \`${first.report.bundleId}\` · ${entries.length} pages · [qualitygate.dev](https://qualitygate.dev/)`,
+        '',
+        combined === undefined
+            ? passed
+                ? `> ✅ Every page is within its configured limits.`
+                : `> ❌ ${failedCount} of ${entries.length} pages exceeded the configured limits.`
+            : combined.passed
+                ? `> ✅ The findings of all ${entries.length} pages together are within the configured limits.`
+                : `> ❌ All ${entries.length} pages together: ${combined.failReason ?? 'configured limits were exceeded.'}`,
+        '',
+        '| Page | Result | 🔴 | 🟠 | 🟡 | 🔵 |',
+        '| --- | :---: | ---: | ---: | ---: | ---: |',
+        ...entries.map(({ report, summary }) => {
+            const counts = summary.issueCounts;
+            return `| ${inlineCode(pageLabel(report)).replace(/\|/g, '\\|')} | ${summary.passed ? '✅' : '❌'} | ${counts.critical} | ${counts.serious} | ${counts.moderate} | ${counts.minor} |`;
+        }),
+        ...(combined === undefined
+            ? []
+            : [
+                `| **All pages** | ${combined.passed ? '✅' : '❌'} | **${combined.issueCounts.critical}** | **${combined.issueCounts.serious}** | **${combined.issueCounts.moderate}** | **${combined.issueCounts.minor}** |`,
+                '',
+                "The limits apply to all pages together. Each page's own result is shown for reference.",
+            ]),
+        '',
+        usageLine(entries[entries.length - 1]),
+    ];
+    for (const entry of entries) {
+        const parts = renderParts(entry, target, perPageLimit);
+        lines.push('', `### ${entry.summary.passed ? '✅' : '❌'} ${inlineCode(pageLabel(entry.report))}`, '', parts.decision, '', ...parts.prioritized, ...(parts.prioritized.length === 0 ? [] : ['']), ...collapsible(flavor, parts.detailsSummary, [...parts.headline, '', ...parts.details], 4));
+    }
+    return lines.join('\n');
+}
+function renderMultiPrComment(entries, options = {}) {
+    const flavor = options.flavor ?? 'github';
+    const marker = flavor === 'bitbucket'
+        ? QUALITYGATE_BITBUCKET_COMMENT_MARKER
+        : QUALITYGATE_COMMENT_MARKER;
+    return `${renderMultiBody(entries, flavor, 'comment', options.combined)}\n${marker}`;
+}
+function renderMultiJobSummary(entries, options = {}) {
+    return renderMultiBody(entries, 'github', 'summary', options.combined);
 }
 function renderPrComment(input, options = {}) {
     const flavor = options.flavor ?? 'github';
@@ -20693,9 +21134,14 @@ function renderLogSummary(input) {
         summary.passed
             ? 'QualityGate passed.'
             : `QualityGate failed: ${summary.failReason ?? 'configured limits were exceeded.'}`,
-        `Scanned ${scrubUrl(report.url)} with the ${safeRuleId(report.bundleId)} bundle.`,
+        report.page !== undefined &&
+            scrubUrl(report.page.finalUrl) !== scrubUrl(report.page.requestedUrl)
+            ? `Scanned ${scrubUrl(report.page.requestedUrl)} with the ${safeRuleId(report.bundleId)} bundle; it redirected to ${scrubUrl(report.page.finalUrl)}.`
+            : `Scanned ${scrubUrl(report.url)} with the ${safeRuleId(report.bundleId)} bundle.`,
         `Found ${counts.critical} critical (max ${failOn.maxCritical}), ${counts.serious} serious (max ${failOn.maxSerious}), ${counts.moderate} moderate, ${counts.minor} minor.`,
     ];
+    if (input.aiReview)
+        lines.push(`AI review ${input.aiReview.status === 'pending' ? 'queued' : 'available'}. ${input.aiReview.url}`);
     for (const result of report.results) {
         if (result.issues.length === 0)
             continue;
@@ -20712,7 +21158,49 @@ function renderLogSummary(input) {
     return lines.join('\n');
 }
 //# sourceMappingURL=render.js.map
+;// CONCATENATED MODULE: ../reporting/dist/report-json.js
+
+const REPORT_FILE_NAME = 'qualitygate-report.json';
+/**
+ * Every finding of every scanned page as JSON, for an artifact that keeps what
+ * a comment has no room for. It holds the same scrubbed data the comment does.
+ */
+function renderReportFile(entries, 
+/** The server's verdict over every page together, when one was asked for. */
+combined) {
+    return `${JSON.stringify({
+        passed: combined?.passed ?? entries.every(({ summary }) => summary.passed),
+        ...(combined === undefined ? {} : { combined }),
+        pages: entries.map(({ report, summary, failOn }) => ({
+            url: scrubUrl(report.url),
+            ...(report.page === undefined
+                ? {}
+                : {
+                    finalUrl: scrubUrl(report.page.finalUrl),
+                    status: report.page.status,
+                    redirects: report.page.redirects.map((hop) => ({
+                        url: scrubUrl(hop.url),
+                        status: hop.status,
+                    })),
+                    securityHeaders: report.page.securityHeaders ?? [],
+                }),
+            ...(report.details?.seo === undefined
+                ? {}
+                : { seo: report.details.seo }),
+            bundle: report.bundleId,
+            passed: summary.passed,
+            ...(summary.failReason === undefined
+                ? {}
+                : { failReason: summary.failReason }),
+            issueCounts: summary.issueCounts,
+            failOn,
+            results: report.results.map(scrubCheckResult),
+        })),
+    }, null, 2)}\n`;
+}
+//# sourceMappingURL=report-json.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/index.js
+
 
 
 

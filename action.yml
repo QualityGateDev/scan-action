@@ -10,7 +10,7 @@ inputs:
     description: Preview URL to scan
     required: true
   bundle:
-    description: Check bundle (a11y, ada, seo, security, links, full, perf, geo, seo-deep, or secrets-exposure). perf runs Lighthouse and installs it on first use; geo and seo-deep are analysed by the QualityGate service on paid plans.
+    description: Check bundle (a11y, ada, seo, security, links, full, full-runtime, perf, geo, seo-deep, or secrets-exposure). perf runs Lighthouse and installs it on first use; geo and seo-deep are analysed by the QualityGate service on paid plans.
     required: false
     default: a11y
   fail_on:
@@ -20,6 +20,25 @@ inputs:
       and 'regression,critical=N' allows N of them.
     required: false
     default: critical=0,serious=0
+  fail_on_new:
+    description: Set 'true' to count the fail_on limits against findings this pull request introduced only, the same as fail_on regression.
+    required: false
+    default: 'false'
+  baseline_branch:
+    description: Branch regression mode compares with, when it is not the default branch. Set it on that branch's push runs too, so they record its baseline.
+    required: false
+  ignore:
+    description: >-
+      Request URLs or messages the full-runtime bundle's runtime errors check
+      skips, one glob or /regex/ per line, for known environment differences
+      such as /cdn-cgi/image/*. Read on the runner, never sent to QualityGate.
+    required: false
+  budgets:
+    description: Experimental lab budgets for the perf bundle, such as 'lcp=2500,cls=0.1,tbt=200' (lcp, cls, tbt, fcp, si, score). Each exceeded budget is a serious finding.
+    required: false
+  perf_form_factor:
+    description: Lighthouse preset for the perf bundle, 'mobile', 'desktop' or 'both'. Defaults to mobile.
+    required: false
   preview_username:
     description: Username for a preview protected by HTTP basic auth. Pass it from a secret. Sent only to the preview URL's origin.
     required: false

@@ -201687,10 +201687,10 @@ function url(params) {
     return core._url(ZodURL, params);
 }
 function httpUrl(params) {
-    return core._url(ZodURL, {
-        protocol: core.regexes.httpProtocol,
-        hostname: core.regexes.domain,
-        ...util.normalizeParams(params),
+    return _url(ZodURL, {
+        protocol: httpProtocol,
+        hostname: domain,
+        ...normalizeParams(params),
     });
 }
 const ZodEmoji = /*@__PURE__*/ $constructor("ZodEmoji", (inst, def) => {
@@ -203112,7 +203112,101 @@ const CollectedSignalsSchema = object({
 })
     .strict();
 //# sourceMappingURL=analysis.js.map
+;// CONCATENATED MODULE: ../shared/dist/ai-analysis.js
+
+const Text = schemas_string().trim().min(1).max(2000);
+const AiFindingSchema = object({
+    ruleId: schemas_enum(['alt-text-quality', 'content-intent-fit', 'reading-level']),
+    message: Text,
+    confidence: schemas_number().min(0).max(1),
+    selector: schemas_string().max(300).optional(),
+    evidenceId: schemas_string().max(30),
+})
+    .strict();
+const AiSuggestionSchema = object({
+    issueFingerprint: schemas_string().regex(/^[a-f0-9]{64}$/),
+    checkId: schemas_string().max(100),
+    issueIndex: schemas_number().int().nonnegative(),
+    explanation: Text,
+    fix: Text,
+    code: schemas_string().max(3000).nullable(),
+})
+    .strict();
+const AiCoverageSchema = object({
+    availableImages: schemas_number().int().nonnegative(),
+    sampledImages: schemas_number().int().min(0).max(5),
+    textChars: schemas_number().int().min(0).max(30000),
+    truncated: schemas_boolean(),
+    selectedIssues: schemas_number().int().min(0).max(20),
+    omittedIssues: schemas_number().int().nonnegative(),
+})
+    .strict();
+const AiReviewStatusSchema = schemas_enum([
+    'pending',
+    'completed',
+    'unavailable',
+    'not_applicable',
+]);
+const RunAiAnalysisSchema = object({
+    status: AiReviewStatusSchema,
+    kind: schemas_enum(['page_and_suggestions', 'suggestions']),
+    findings: array(AiFindingSchema).max(20),
+    suggestions: array(AiSuggestionSchema).max(20),
+    coverage: AiCoverageSchema,
+    completedAt: schemas_string().datetime().nullable(),
+    failureKind: schemas_enum([
+        'provider_failed',
+        'invalid_response',
+        'interrupted',
+        'collection_failed',
+        'entitlement_changed',
+        'insufficient_credits',
+    ])
+        .nullable(),
+    contentFitDecision: object({ probability: schemas_number().min(0).max(1) })
+        .strict()
+        .optional(),
+})
+    .strict();
+const AI_CREDIT_PACK_CENTS = [1000, 2500, 5000];
+const AI_CREDIT_MIN_CENTS = AI_CREDIT_PACK_CENTS[0];
+const AI_CREDIT_MAX_CENTS = 10_000;
+const AiCreditAmountCentsSchema = schemas_number()
+    .int()
+    .min(AI_CREDIT_MIN_CENTS)
+    .max(AI_CREDIT_MAX_CENTS);
+const AI_REVIEW_LIMIT_MICROS = 100_000;
+const AiCreditSummarySchema = object({
+    availableMicros: schemas_number().int().nonnegative(),
+    spentMicros: schemas_number().int().nonnegative(),
+    reviewLimitMicros: schemas_number().int().positive(),
+})
+    .strict();
+const AiReviewSettingsSchema = object({ automatic: schemas_boolean() })
+    .strict();
+const CiAiReviewSchema = object({
+    status: schemas_enum(['pending', 'available']),
+    url: httpUrl(),
+})
+    .strict();
+const CI_REPORT_WITH_AI_REVIEW = 'application/json; include=ai-review';
+/**
+ * Also asks for the comparison results (`comparison` on the report response).
+ * Every shipped adapter parses that response strictly, so the field is only
+ * sent to a client that names it here.
+ */
+const CI_REPORT_WITH_COMPARISON = 'application/json; include=ai-review,comparison';
+/** The `include=` parts of an Accept header the CI report route understands. */
+function acceptedReportIncludes(accept) {
+    const match = /^application\/json\s*;\s*include=([a-z,-]+)\s*$/i.exec(accept?.trim() ?? '');
+    return new Set((match?.[1] ?? '')
+        .toLowerCase()
+        .split(',')
+        .filter((part) => part !== ''));
+}
+//# sourceMappingURL=ai-analysis.js.map
 ;// CONCATENATED MODULE: ../shared/dist/contract.js
+
 
 
 const CiProviderSchema = schemas_enum(['github', 'gitlab', 'bitbucket']);
@@ -203128,6 +203222,7 @@ const contract_BundleIdSchema = schemas_enum([
     'security',
     'links',
     'full',
+    'full-runtime',
     'perf',
     'secrets-exposure',
     'geo',
@@ -203142,6 +203237,7 @@ const CheckIdSchema = schemas_enum([
     'secrets-exposure',
     'geo',
     'seo-deep',
+    'runtime-errors',
 ]);
 // Which checks a bundle runs. The backend validates uploaded results against
 // this without importing `core`, which would drag Playwright onto the server.
@@ -203157,6 +203253,16 @@ const contract_BUNDLE_CHECK_IDS = {
     // Ordered cheapest-first: the three document reads finish before the link check
     // starts spending time on the network.
     full: ['a11y', 'seo', 'security-headers', 'broken-links'],
+    // `full` plus browser runtime errors, still one page load. A separate id,
+    // because adding a check to `full` would reject uploads from every pinned
+    // adapter that still runs four checks.
+    'full-runtime': [
+        'a11y',
+        'seo',
+        'security-headers',
+        'broken-links',
+        'runtime-errors',
+    ],
     // Deliberately outside `full`: Lighthouse loads the page several times and
     // adds tens of seconds, so it is opted into rather than folded into every
     // complete run (QG-P5-05).
@@ -203204,11 +203310,25 @@ const FailOnSchema = object({
     mode: FailOnModeSchema.optional(),
 })
     .strict();
+/**
+ * A Git branch name as CI reports it. Deliberately loose about which
+ * characters Git allows, but never empty, never a path escape, never a
+ * revision expression.
+ */
+const BranchNameSchema = schemas_string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^(?!\/)(?!.*\.\.)(?!.*\/$)[^\s~^:?*[\\]+$/, 'must be a Git branch name');
 const RequestedConfigSchema = object({
     bundle: contract_BundleIdSchema,
     failOn: FailOnSchema,
     engineVersion: schemas_string().trim().min(1).max(100),
     actionVersion: schemas_string().trim().min(1).max(100),
+    // The branch whose accepted state regression mode compares against, when
+    // it is not the project's default branch. Set by the server from the
+    // request's top-level `baselineBranch`; absent means the default branch.
+    baselineBranch: BranchNameSchema.optional(),
 })
     .strict();
 const DENY_REASONS = [
@@ -203264,6 +203384,10 @@ const AuthorizeRequestSchema = object({
     // is: only a scheduled run sends it. A backend that predates it drops the
     // key and counts the run as `ci`, which is the safe direction.
     trigger: AuthorizeRunTriggerSchema.optional(),
+    // QUALITYGATE_BASELINE_BRANCH. Top level rather than inside the strict
+    // `requestedConfig`, so a backend that predates it drops it and compares
+    // with the default branch, instead of rejecting the run.
+    baselineBranch: BranchNameSchema.optional(),
 })
     // Deliberately not `.strict()`. The Action ships and updates independently of
     // this server, so a strict request schema means every field a newer client
@@ -203441,8 +203565,32 @@ const CommentDeliverySchema = schemas_enum([
 ]);
 // Protocol 0: exactly what every shipped Action already parses.
 const LegacyReportResponseSchema = GateVerdictSchema;
+/** Earlier findings this run can be compared with, for display only. */
+const RunComparisonSchema = object({
+    // The accepted state of the baseline branch, the one regression mode gates
+    // against. Absent when there is no usable baseline.
+    baseline: object({
+        branch: BranchNameSchema,
+        results: array(CheckResultSchema),
+    })
+        .strict()
+        .optional(),
+    // The last reported run of the same pull request, page and bundle.
+    previousRun: object({
+        runId: schemas_string().uuid(),
+        createdAt: schemas_string().datetime({ offset: true }),
+        results: array(CheckResultSchema),
+    })
+        .strict()
+        .optional(),
+})
+    .strict();
 // Protocol 1: the verdict plus what the backend did with the comment.
 const AppCommentReportResponseSchema = GateVerdictSchema.extend({
+    // Only for a client that asked with CI_REPORT_WITH_COMPARISON. The verdict
+    // was computed from the same baseline; this only lets a CI comment show it.
+    comparison: RunComparisonSchema.optional(),
+    aiReview: CiAiReviewSchema.optional(),
     usage: UsageSummarySchema,
     commentDelivery: CommentDeliverySchema,
     // The analysed, authoritative results. Present only for analysis-tier
@@ -203462,6 +203610,24 @@ const FailResponseSchema = object({
     status: literal('failed'),
 })
     .strict();
+/** At most this many pages share one combined verdict, as QUALITYGATE_URLS allows. */
+const MAX_COMBINED_RUNS = 20;
+// A combined verdict over several reported runs of one CI step, such as the
+// pages of QUALITYGATE_URLS. Each run proves possession with its own upload
+// token; the server sums the stored findings and evaluates the gate once.
+const contract_CombinedVerdictRequestSchema = object({
+    runs: array(object({
+        runId: schemas_string().uuid(),
+        uploadToken: schemas_string().trim().min(1).max(4096),
+    })
+        .strict())
+        .min(2)
+        .max(MAX_COMBINED_RUNS),
+})
+    .strict();
+const contract_CombinedVerdictResponseSchema = GateVerdictSchema.extend({
+    runCount: schemas_number().int().min(2).max(MAX_COMBINED_RUNS),
+}).strict();
 //# sourceMappingURL=contract.js.map
 ;// CONCATENATED MODULE: ../shared/dist/product-catalog.js
 
@@ -203547,6 +203713,13 @@ const product_catalog_BUNDLE_DETAILS = {
         gate: 'Critical or serious findings from any of those four checks.',
         note: 'One run. Performance, AI search, site crawl and exposed secrets are separate bundles.',
     },
+    'full-runtime': {
+        name: 'Full check plus runtime errors',
+        summary: 'Everything in full, plus browser console errors, uncaught exceptions and failed requests.',
+        coverage: 'Combines accessibility, on-page SEO, security headers, broken links and runtime errors in one page load.',
+        gate: 'Critical or serious findings from any of those five checks, including uncaught exceptions and failed scripts or stylesheets.',
+        note: 'One run. Use QUALITYGATE_IGNORE for known environment differences, such as a CDN the test host does not run.',
+    },
     perf: {
         name: 'Performance',
         summary: 'Lighthouse on simulated mobile, median of three loads. Adds 15 to 30 seconds.',
@@ -203587,7 +203760,14 @@ const BUNDLE_GROUPS = [
         id: 'release-quality',
         name: 'Release quality',
         description: 'Page SEO, security headers, broken links and exposed credentials. full combines accessibility, SEO, security and links; advanced scans run separately.',
-        bundleIds: ['seo', 'security', 'links', 'full', 'secrets-exposure'],
+        bundleIds: [
+            'seo',
+            'security',
+            'links',
+            'full',
+            'full-runtime',
+            'secrets-exposure',
+        ],
     },
     {
         id: 'performance-search',
@@ -203599,7 +203779,7 @@ const BUNDLE_GROUPS = [
 const PRODUCT_FEATURES = [
     {
         id: 'scans',
-        name: 'Ten scan bundles',
+        name: 'Eleven scan bundles',
         description: 'Choose accessibility, release quality, performance and search visibility checks for each URL.',
         docsPath: '/docs/bundles',
     },
@@ -203765,7 +203945,7 @@ const SELECTOR_SEGMENT_LIMIT = 3;
  * fingerprint, and a genuinely new issue then reports as pre-existing, which is
  * the one failure this feature exists to prevent.
  */
-const GENERATED_TOKEN_PATTERNS = (/* unused pure expression or super */ null && ([
+const GENERATED_TOKEN_PATTERNS = [
     /^sc-[A-Za-z0-9]{5,}$/, // styled-components
     /^css-[a-z0-9]{5,}$/, // emotion
     /^_?ng(content|host)-/, // Angular view encapsulation
@@ -203773,7 +203953,7 @@ const GENERATED_TOKEN_PATTERNS = (/* unused pure expression or super */ null && 
     /^svelte-[a-z0-9]{5,}$/, // Svelte scoped styles
     /__[A-Za-z0-9]{5,}$/, // CSS modules: Button_root__x7f3a
     /^[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9]{5,}$/, // CSS modules, short form
-]));
+];
 /**
  * A hex-looking run long enough to be a content hash. Requiring a digit keeps
  * ordinary words out: "feedface" is hex, "checkout" is not, and neither should
@@ -203912,7 +204092,7 @@ function normalizePagePath(url) {
  * two different findings cannot collide by their fields running together.
  */
 function fingerprint_fingerprintIssue(checkId, issue) {
-    return createHash('sha256')
+    return (0,external_node_crypto_.createHash)('sha256')
         .update([
         FINGERPRINT_VERSION,
         checkId,
@@ -203922,7 +204102,7 @@ function fingerprint_fingerprintIssue(checkId, issue) {
     ].join('\n'))
         .digest('hex');
 }
-function fingerprint_fingerprintResults(results) {
+function fingerprintResults(results) {
     return results.flatMap(({ checkId, issues }) => issues.map((issue) => ({
         checkId,
         fingerprint: fingerprint_fingerprintIssue(checkId, issue),
@@ -204258,6 +204438,7 @@ const ProjectSummarySchema = object({
     accessVerification: AccessVerificationSchema,
     allowedDomains: array(schemas_string().min(1)).min(1),
     defaultBranch: schemas_string().trim().min(1).max(255),
+    hasReportedCiRun: schemas_boolean().optional(),
     id: schemas_string().uuid(),
     installationId: schemas_string().uuid().nullable(),
     keys: array(ApiKeyMetadataSchema),
@@ -204310,6 +204491,7 @@ const ProjectErrorCodeSchema = schemas_enum(PROJECT_ERROR_CODES);
 
 
 
+
 const RUN_SCORE_VERSION = 'finding-penalty-v1';
 const RunAttemptStatusSchema = schemas_enum([
     'reserved',
@@ -204319,6 +204501,7 @@ const RunAttemptStatusSchema = schemas_enum([
 ]);
 const RunScoreVersionSchema = literal(RUN_SCORE_VERSION);
 const ProjectRunHistoryItemSchema = object({
+    aiReviewStatus: AiReviewStatusSchema.optional(),
     branch: schemas_string().nullable(),
     bundle: contract_BundleIdSchema.nullable(),
     commitSha: schemas_string().nullable(),
@@ -204354,6 +204537,7 @@ const ProjectRunHistoryItemSchema = object({
 const ProjectRunHistoryIdentitySchema = object({
     defaultBranch: schemas_string(),
     id: schemas_string().uuid(),
+    pipelineSetupComplete: schemas_boolean().optional(),
     provider: CiProviderSchema,
     repo: RepositoryPathSchema,
 })
@@ -204365,12 +204549,17 @@ function datetimeOrderKey(timestamp) {
     const seconds = whole.length === 16 ? `${whole}:00` : whole;
     return `${seconds}.${fraction.replace(/0+$/, '')}`;
 }
+// Request the count explicitly so either version can deploy first.
+const RUN_HISTORY_WITH_TOTAL = 'application/json; include=run-count';
+const RUN_HISTORY_WITH_SETUP = 'application/json; include=run-count-and-setup';
+const RUN_HISTORY_WITH_AI = 'application/json; include=run-count-setup-and-ai-review';
 const ProjectRunHistorySchema = object({
     availableBundles: array(contract_BundleIdSchema),
     defaultBundle: contract_BundleIdSchema.nullable(),
     items: array(ProjectRunHistoryItemSchema).max(20),
     nextCursor: schemas_string().nullable(),
     project: ProjectRunHistoryIdentitySchema,
+    totalRuns: schemas_number().int().nonnegative().optional(),
 })
     .strict()
     .superRefine((history, context) => {
@@ -204575,56 +204764,6 @@ const ReportShareListSchema = object({ shares: array(ReportShareSchema) })
 const CreatedReportShareSchema = object({ share: ReportShareSchema, url: schemas_string().url() })
     .strict();
 //# sourceMappingURL=report-sharing.js.map
-;// CONCATENATED MODULE: ../shared/dist/ai-analysis.js
-
-const Text = schemas_string().trim().min(1).max(2000);
-const AiFindingSchema = object({
-    ruleId: schemas_enum(['alt-text-quality', 'content-intent-fit', 'reading-level']),
-    message: Text,
-    confidence: schemas_number().min(0).max(1),
-    selector: schemas_string().max(300).optional(),
-    evidenceId: schemas_string().max(30),
-})
-    .strict();
-const AiSuggestionSchema = object({
-    issueFingerprint: schemas_string().regex(/^[a-f0-9]{64}$/),
-    checkId: schemas_string().max(100),
-    issueIndex: schemas_number().int().nonnegative(),
-    explanation: Text,
-    fix: Text,
-    code: schemas_string().max(3000).nullable(),
-})
-    .strict();
-const AiCoverageSchema = object({
-    availableImages: schemas_number().int().nonnegative(),
-    sampledImages: schemas_number().int().min(0).max(5),
-    textChars: schemas_number().int().min(0).max(30000),
-    truncated: schemas_boolean(),
-    selectedIssues: schemas_number().int().min(0).max(20),
-    omittedIssues: schemas_number().int().nonnegative(),
-})
-    .strict();
-const RunAiAnalysisSchema = object({
-    status: schemas_enum(['pending', 'completed', 'unavailable', 'not_applicable']),
-    kind: schemas_enum(['page_and_suggestions', 'suggestions']),
-    findings: array(AiFindingSchema).max(20),
-    suggestions: array(AiSuggestionSchema).max(20),
-    coverage: AiCoverageSchema,
-    completedAt: schemas_string().datetime().nullable(),
-    failureKind: schemas_enum([
-        'provider_failed',
-        'invalid_response',
-        'interrupted',
-        'collection_failed',
-        'entitlement_changed',
-    ])
-        .nullable(),
-    contentFitDecision: object({ probability: schemas_number().min(0).max(1) })
-        .strict()
-        .optional(),
-})
-    .strict();
-//# sourceMappingURL=ai-analysis.js.map
 ;// CONCATENATED MODULE: ../shared/dist/run-detail.js
 
 
@@ -205401,7 +205540,81 @@ function isLoopbackHostname(hostname) {
 
 
 //# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/csp.js
+// Content-Security-Policy parsing and script-source analysis, following CSP
+// Level 3 (https://www.w3.org/TR/CSP3/). Pure, so every rule is unit tested.
+/**
+ * Parses one serialized policy. Per CSP3 the first occurrence of a directive
+ * wins and later duplicates are ignored, which is what browsers do.
+ */
+function parseCspPolicy(value) {
+    const policy = new Map();
+    for (const part of value.split(';')) {
+        const [name, ...tokens] = part.trim().split(/\s+/);
+        if (name === undefined || name === '')
+            continue;
+        const directive = name.toLowerCase();
+        if (policy.has(directive))
+            continue;
+        policy.set(directive, tokens);
+    }
+    return policy;
+}
+/**
+ * A header can carry several policies, comma separated, and the browser
+ * enforces every one of them. Playwright also joins repeated headers with a
+ * newline, so both separators start a new policy.
+ */
+function parseCspHeader(value) {
+    return value
+        .split(/[,\n]/)
+        .map((policy) => policy.trim())
+        .filter((policy) => policy !== '')
+        .map(parseCspPolicy);
+}
+const NONCE_OR_HASH = /^'(nonce-|sha256-|sha384-|sha512-)/i;
+function isAllowlistSource(token) {
+    const lowered = token.toLowerCase();
+    if (lowered === "'self'")
+        return true;
+    // Keywords and nonces/hashes are quoted; host and scheme sources are not.
+    return !lowered.startsWith("'");
+}
+/**
+ * How one policy governs scripts. `script-src` is read first; `default-src`
+ * applies only when `script-src` is absent, because that is the fallback order
+ * the specification defines.
+ */
+function analyzeScriptSource(policy) {
+    const scriptSrc = policy.get('script-src');
+    const defaultSrc = policy.get('default-src');
+    const directive = scriptSrc !== undefined
+        ? 'script-src'
+        : defaultSrc !== undefined
+            ? 'default-src'
+            : null;
+    const tokens = scriptSrc ?? defaultSrc ?? [];
+    const lowered = tokens.map((token) => token.toLowerCase());
+    const hasNonceOrHash = tokens.some((token) => NONCE_OR_HASH.test(token));
+    const strictDynamic = lowered.includes("'strict-dynamic'");
+    const unsafeInline = lowered.includes("'unsafe-inline'");
+    return {
+        directive,
+        tokens,
+        hasNonceOrHash,
+        strictDynamic,
+        unsafeEval: lowered.includes("'unsafe-eval'"),
+        unsafeInlineEnforced: unsafeInline && !hasNonceOrHash,
+        unsafeInlineFallback: unsafeInline && hasNonceOrHash,
+        ignoredAllowlist: strictDynamic ? tokens.filter(isAllowlistSource) : [],
+    };
+}
+function hasDirective(policies, name) {
+    return policies.some((policy) => policy.has(name));
+}
+//# sourceMappingURL=csp.js.map
 ;// CONCATENATED MODULE: ../core/dist/checks/security-headers.js
+
 
 
 const SECURITY_HEADERS_CHECK_ID = 'security-headers';
@@ -205424,13 +205637,6 @@ const security_headers_HELP = {
 };
 /** Six months, the floor every major preload list requires. */
 const MINIMUM_HSTS_MAX_AGE_SECONDS = 15_552_000;
-function directive(policy, name) {
-    return policy
-        .split(';')
-        .map((part) => part.trim())
-        .find((part) => part.toLowerCase().startsWith(`${name} `) ||
-        part.toLowerCase() === name);
-}
 /**
  * Whether the page is served from this machine. A build scanned inside the CI
  * job is reached this way, and its traffic never crosses a network, so plain
@@ -205451,6 +205657,87 @@ function parseHstsMaxAge(value) {
     const seconds = Number(match[1]);
     return Number.isFinite(seconds) ? seconds : null;
 }
+function quoted(tokens) {
+    return tokens.map((token) => `\`${token}\``).join(', ');
+}
+/**
+ * Script-source findings over every enforced policy. A browser enforces all of
+ * them, so a token is only effective when every policy that restricts scripts
+ * allows it; one strict policy is enough to block eval or inline script.
+ */
+function evaluateScriptPolicy(policies, pageUrl) {
+    const restricting = policies
+        .map(analyzeScriptSource)
+        .filter((analysis) => analysis.directive !== null);
+    if (restricting.length === 0)
+        return [];
+    const first = restricting[0];
+    const problems = [];
+    if (restricting.every((analysis) => analysis.unsafeEval)) {
+        problems.push("`'unsafe-eval'`, so eval() and new Function() can run strings as code");
+    }
+    // With a nonce or hash, CSP3 browsers ignore 'unsafe-inline'; it remains only
+    // for browsers older than CSP2, which is the recommended strict-CSP pattern.
+    if (restricting.every((analysis) => analysis.unsafeInlineEnforced)) {
+        problems.push("`'unsafe-inline'` without a nonce or hash, so injected inline scripts run");
+    }
+    if (problems.length === 0)
+        return [];
+    // One rule id for both tokens keeps the fingerprint of earlier baselines.
+    const issues = [
+        {
+            ruleId: 'content-security-policy-unsafe',
+            severity: 'moderate',
+            message: `\`${first.directive}\`${first.directive === 'default-src' ? ' (no `script-src` is set)' : ''} allows ${problems.join(', and ')}.`,
+            url: pageUrl,
+            helpUrl: security_headers_HELP.csp,
+        },
+    ];
+    return issues;
+}
+/**
+ * What the script policy does, in one line per policy, for a report that
+ * explains a pass as well as a failure. Not a finding.
+ */
+function describeScriptPolicy(csp) {
+    return parseCspHeader(csp).flatMap((policy) => {
+        const analysis = analyzeScriptSource(policy);
+        if (analysis.directive === null)
+            return [];
+        const notes = [];
+        if (analysis.hasNonceOrHash)
+            notes.push('nonce or hash');
+        if (analysis.strictDynamic)
+            notes.push(`\`'strict-dynamic'\``);
+        if (analysis.unsafeInlineFallback)
+            notes.push("`'unsafe-inline'` is ignored by CSP3 browsers (fallback for old browsers only)");
+        if (analysis.ignoredAllowlist.length > 0)
+            notes.push(`${quoted(analysis.ignoredAllowlist)} ignored because of \`'strict-dynamic'\``);
+        if (analysis.unsafeEval)
+            notes.push("`'unsafe-eval'` allowed");
+        return [
+            `\`${analysis.directive}\`${notes.length === 0 ? '' : `: ${notes.join('; ')}`}`,
+        ];
+    });
+}
+/** Security headers to name as present, in the order a reader expects. */
+const SUMMARIZED_SECURITY_HEADERS = [
+    'strict-transport-security',
+    'content-security-policy',
+    'content-security-policy-report-only',
+    'x-frame-options',
+    'x-content-type-options',
+    'referrer-policy',
+    'permissions-policy',
+    'cross-origin-opener-policy',
+    'cross-origin-embedder-policy',
+    'cross-origin-resource-policy',
+];
+/** Which of the summarized headers the response sets, by canonical name. */
+function presentSecurityHeaders(headers) {
+    const names = new Set(Object.keys(headers).map((key) => key.toLowerCase()));
+    return SUMMARIZED_SECURITY_HEADERS.filter((name) => names.has(name));
+}
 /**
  * Maps a header set onto issues. Pure and exported so the rule set can be tested
  * without launching a browser.
@@ -205468,6 +205755,9 @@ function evaluateSecurityHeaders(headers, pageUrl) {
     };
     const isHttps = pageUrl.toLowerCase().startsWith('https://');
     const csp = header('content-security-policy');
+    // Report-only policies are never enforced, so they count for nothing below.
+    const reportOnly = header('content-security-policy-report-only');
+    const enforced = csp === undefined ? [] : parseCspHeader(csp);
     // Transport is a property of the deployment, not of the build, so a server
     // on this machine is not held to it. Every header below still applies: the
     // application sets those, wherever it runs.
@@ -205480,19 +205770,17 @@ function evaluateSecurityHeaders(headers, pageUrl) {
     // Either header answers clickjacking. CSP `frame-ancestors` supersedes
     // X-Frame-Options where both are present, so one of the two is enough.
     const framingProtected = header('x-frame-options') !== undefined ||
-        (csp !== undefined && directive(csp, 'frame-ancestors') !== undefined);
+        hasDirective(enforced, 'frame-ancestors');
     if (!framingProtected) {
         add('framing-protection-missing', 'serious', 'Neither `X-Frame-Options` nor a CSP `frame-ancestors` directive is set, so the page can be framed by any site.', security_headers_HELP.frame);
     }
     if (csp === undefined) {
-        add('content-security-policy-missing', 'moderate', 'No Content-Security-Policy is set. Adopting one is real work, so this is reported rather than gated.', security_headers_HELP.csp);
+        add('content-security-policy-missing', 'moderate', reportOnly === undefined
+            ? 'No Content-Security-Policy is set. Adopting one is real work, so this is reported rather than gated.'
+            : 'Only `Content-Security-Policy-Report-Only` is set. Browsers report violations of it but do not enforce it, so it does not protect the page yet.', security_headers_HELP.csp);
     }
     else {
-        const scriptSource = directive(csp, 'script-src') ?? directive(csp, 'default-src');
-        const unsafe = ["'unsafe-inline'", "'unsafe-eval'"].filter((token) => scriptSource?.toLowerCase().includes(token));
-        if (unsafe.length > 0) {
-            add('content-security-policy-unsafe', 'moderate', `The script source policy allows ${unsafe.join(' and ')}, which removes most of the protection the policy is there to provide.`, security_headers_HELP.csp);
-        }
+        issues.push(...evaluateScriptPolicy(enforced, pageUrl));
     }
     // HSTS is usually configured at the edge rather than in the application, and
     // preview hosts frequently differ from production, so it reports below the
@@ -205542,7 +205830,7 @@ const securityHeadersCheck = {
 //# sourceMappingURL=security-headers.js.map
 ;// CONCATENATED MODULE: ../core/dist/checks/performance.js
 
-const PERFORMANCE_CHECK_ID = 'performance';
+const performance_PERFORMANCE_CHECK_ID = 'performance';
 // Lighthouse performance (QG-P5-05). Performance was held back from earlier
 // phases because single Lighthouse runs are noisy in CI. Three mitigations make
 // the result stable enough to gate on:
@@ -205567,7 +205855,7 @@ const ATTEMPTS_PER_RUN = 2;
 // rather than waiting on.
 const MAX_WAIT_FOR_LOAD_MS = 45_000;
 /** Adapts the real Lighthouse modules, wherever they were loaded from. */
-function createLighthouseEngine(modules) {
+function performance_createLighthouseEngine(modules) {
     return {
         async run(url, { port, formFactor }) {
             const runnerResult = await modules.lighthouse.default(url, {
@@ -205612,7 +205900,7 @@ const loadInstalledLighthouse = async () => {
         Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 543, 19)),
         Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 663, 19)),
     ]);
-    return createLighthouseEngine({
+    return performance_createLighthouseEngine({
         lighthouse: lighthouse,
         medianRun: medianRun,
     });
@@ -205691,6 +205979,114 @@ function evaluateLighthouseResult(result, pageUrl) {
     }
     return [...metrics, ...insights];
 }
+const BUDGET_METRICS = {
+    lcp: {
+        audit: 'largest-contentful-paint',
+        name: 'Largest Contentful Paint',
+        unit: 'ms',
+    },
+    cls: {
+        audit: 'cumulative-layout-shift',
+        name: 'Cumulative Layout Shift',
+        unit: '',
+    },
+    // Lab data has no interactions, so INP cannot be measured here. Total
+    // Blocking Time is the lab metric that moves with it.
+    tbt: {
+        audit: 'total-blocking-time',
+        name: 'Total Blocking Time (lab proxy for INP)',
+        unit: 'ms',
+    },
+    fcp: {
+        audit: 'first-contentful-paint',
+        name: 'First Contentful Paint',
+        unit: 'ms',
+    },
+    si: { audit: 'speed-index', name: 'Speed Index', unit: 'ms' },
+    score: { audit: null, name: 'Lighthouse performance score', unit: 'points' },
+};
+class PerformanceBudgetError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'PerformanceBudgetError';
+    }
+}
+/**
+ * Parses QUALITYGATE_BUDGETS, such as `lcp=2500,cls=0.1,tbt=200`. Times are
+ * milliseconds, CLS is unitless, and `score` is the lowest acceptable
+ * Lighthouse score from 0 to 100.
+ */
+function parsePerformanceBudgets(value) {
+    if (value === undefined || value.trim() === '')
+        return undefined;
+    const budgets = {};
+    for (const entry of value.split(/[\s,]+/).filter((part) => part !== '')) {
+        const [rawName, rawLimit, extra] = entry.split('=');
+        const name = rawName?.trim().toLowerCase();
+        if (name === undefined ||
+            !(name in BUDGET_METRICS) ||
+            extra !== undefined) {
+            throw new PerformanceBudgetError(`Unknown budget "${rawName ?? entry}". Use ${Object.keys(BUDGET_METRICS).join(', ')}.`);
+        }
+        if (name in budgets) {
+            throw new PerformanceBudgetError(`The ${name} budget is set twice.`);
+        }
+        const limit = Number(rawLimit?.trim());
+        if (rawLimit === undefined ||
+            rawLimit.trim() === '' ||
+            !Number.isFinite(limit) ||
+            limit < 0) {
+            throw new PerformanceBudgetError(`The ${name} budget must be a non-negative number.`);
+        }
+        if (name === 'score' && limit > 100) {
+            throw new PerformanceBudgetError('The score budget must be from 0 to 100.');
+        }
+        budgets[name] = limit;
+    }
+    return Object.keys(budgets).length === 0 ? undefined : budgets;
+}
+function formatBudgetValue(value, unit) {
+    if (unit === 'ms')
+        return `${Math.round(value).toLocaleString('en-US')} ms`;
+    if (unit === 'points')
+        return String(Math.round(value));
+    return String(Math.round(value * 1000) / 1000);
+}
+const BUDGET_HELP = 'https://developers.google.com/search/docs/appearance/core-web-vitals';
+/**
+ * Findings for every budget the median run exceeds. Budgets are limits the
+ * team chose, so exceeding one is serious and fails the default gate. Values
+ * are lab measurements under simulated throttling, which the message says,
+ * since field data from real visitors can be better or worse.
+ */
+function evaluatePerformanceBudgets(result, budgets, pageUrl, formFactor) {
+    const issues = [];
+    for (const [metric, limit] of Object.entries(budgets)) {
+        const definition = BUDGET_METRICS[metric];
+        let measured;
+        if (definition.audit === null) {
+            const score = result.categories.performance?.score;
+            measured =
+                score === null || score === undefined ? undefined : score * 100;
+            if (measured === undefined || Math.round(measured) >= limit)
+                continue;
+        }
+        else {
+            measured = result.audits[definition.audit]?.numericValue;
+            if (measured === undefined || measured <= limit)
+                continue;
+        }
+        const comparison = definition.audit === null ? 'under' : 'over';
+        issues.push({
+            ruleId: `performance-budget-${metric}`,
+            severity: 'serious',
+            message: `${definition.name} is ${formatBudgetValue(measured, definition.unit)}, ${comparison} the ${formatBudgetValue(limit, definition.unit)} budget. Lab value on simulated ${formFactor}; real visitors can measure differently.`,
+            url: pageUrl,
+            helpUrl: BUDGET_HELP,
+        });
+    }
+    return issues;
+}
 async function runWithRetry(engine, url, options) {
     let failure;
     for (let attempt = 0; attempt < ATTEMPTS_PER_RUN; attempt += 1) {
@@ -205706,10 +206102,10 @@ async function runWithRetry(engine, url, options) {
     }
     return { failure: failure ?? 'unknown Lighthouse failure' };
 }
-function createPerformanceCheck(options = {}) {
+function performance_createPerformanceCheck(options = {}) {
     const loadLighthouse = options.loadLighthouse ?? loadInstalledLighthouse;
     return {
-        id: PERFORMANCE_CHECK_ID,
+        id: performance_PERFORMANCE_CHECK_ID,
         requiresDebuggingPort: true,
         async run(context) {
             const config = readPerformanceConfig(context.config);
@@ -205729,39 +206125,70 @@ function createPerformanceCheck(options = {}) {
             catch (error) {
                 throw new ScanInfrastructureError('performance_engine_unavailable', 'Lighthouse could not be loaded', error);
             }
-            const runOptions = {
-                port: context.debuggingPort,
-                formFactor: config.formFactor,
-            };
-            const results = [];
-            const failures = [];
-            for (let run = 0; run < config.runs; run += 1) {
-                const outcome = await runWithRetry(engine, context.url, runOptions);
-                if (outcome.result) {
-                    await context.validateFinalUrl?.(outcome.result.finalDisplayedUrl);
-                    results.push(outcome.result);
-                }
-                else if (outcome.failure)
-                    failures.push(outcome.failure);
-            }
-            const median = results.length === 0
-                ? undefined
-                : results.length === 1
-                    ? results[0]
-                    : engine.medianRun(results);
-            const score = median?.categories.performance?.score;
-            if (median === undefined || score === null || score === undefined) {
-                throw new ScanInfrastructureError('performance_analysis_failed', `Lighthouse could not measure ${context.url}: ${failures.join(', ') || 'no performance score'}`);
+            const formFactors = context.performance?.formFactors ?? [
+                config.formFactor,
+            ];
+            const budgets = context.performance?.budgets;
+            // With more than one preset, each finding names its preset, so the
+            // mobile and desktop versions of one audit are two issues.
+            const tagged = formFactors.length > 1;
+            const issues = [];
+            let lowestScore;
+            for (const formFactor of formFactors) {
+                const median = await measure(engine, context, {
+                    port: context.debuggingPort,
+                    formFactor,
+                }, config.runs);
+                const score = median.categories.performance.score;
+                lowestScore = Math.min(lowestScore ?? score, score);
+                const found = [
+                    ...(budgets === undefined
+                        ? []
+                        : evaluatePerformanceBudgets(median, budgets, context.url, formFactor)),
+                    ...evaluateLighthouseResult(median, context.url),
+                ];
+                issues.push(...(tagged
+                    ? found.map((issue) => ({
+                        ...issue,
+                        selector: formFactor,
+                        message: `${formFactor === 'mobile' ? 'Mobile' : 'Desktop'}: ${issue.message}`,
+                    }))
+                    : found));
             }
             return {
-                checkId: PERFORMANCE_CHECK_ID,
-                score: Math.round(score * 100),
-                issues: evaluateLighthouseResult(median, context.url),
+                checkId: performance_PERFORMANCE_CHECK_ID,
+                // The lower of the presets, so a passing score is true of both.
+                score: Math.round(lowestScore * 100),
+                issues,
             };
         },
     };
 }
-const performanceCheck = createPerformanceCheck();
+/** The median of several Lighthouse runs for one preset. */
+async function measure(engine, context, runOptions, runs) {
+    const results = [];
+    const failures = [];
+    for (let run = 0; run < runs; run += 1) {
+        const outcome = await runWithRetry(engine, context.url, runOptions);
+        if (outcome.result) {
+            await context.validateFinalUrl?.(outcome.result.finalDisplayedUrl);
+            results.push(outcome.result);
+        }
+        else if (outcome.failure)
+            failures.push(outcome.failure);
+    }
+    const median = results.length === 0
+        ? undefined
+        : results.length === 1
+            ? results[0]
+            : engine.medianRun(results);
+    const score = median?.categories.performance?.score;
+    if (median === undefined || score === null || score === undefined) {
+        throw new ScanInfrastructureError('performance_analysis_failed', `Lighthouse could not measure ${context.url}: ${failures.join(', ') || 'no performance score'}`);
+    }
+    return median;
+}
+const performanceCheck = performance_createPerformanceCheck();
 //# sourceMappingURL=performance.js.map
 ;// CONCATENATED MODULE: ../core/dist/checks/gitleaks-rules.js
 // Ported from the gitleaks rule set, v8.30.1 (https://github.com/gitleaks/gitleaks).
@@ -206525,6 +206952,7 @@ function aiReviewHtml(analysis, pdf) {
     if (!analysis)
         return '';
     const coverage = analysis.coverage;
+    const suggestionCount = analysis.suggestions.length;
     const warning = analysis.status === 'unavailable'
         ? '<p class="ai-warning">AI review unavailable. Automated findings remain available.</p>'
         : coverage.truncated || coverage.omittedIssues > 0
@@ -206534,7 +206962,10 @@ function aiReviewHtml(analysis, pdf) {
         .slice(0, pdf ? 5 : 20)
         .map((finding) => `<li><strong>${escapeText(finding.ruleId)}</strong><p>${escapeText(finding.message)}</p><p>Confidence: ${Math.round(finding.confidence * 100)}%</p>${finding.selector ? `<code>${escapeText(finding.selector)}</code>` : ''}</li>`)
         .join('');
-    return `<section class="check-section" aria-labelledby="ai-review"><h2 id="ai-review">AI review</h2><p>Advisory findings and suggested fixes. Human review required.</p>${warning}${analysis.status === 'pending' ? '<p>Preparing AI suggestions…</p>' : ''}${analysis.status === 'not_applicable' ? '<p>Not enough eligible evidence for an AI review.</p>' : ''}${analysis.status === 'completed' ? `<p>${coverage.sampledImages} of ${coverage.availableImages} images reviewed · ${coverage.textChars} text characters sampled · ${coverage.selectedIssues} issues selected for suggestions</p>${entries ? `<ul>${entries}</ul>` : '<p>No AI concerns recorded in the sampled evidence.</p>'}${pdf && analysis.findings.length > 5 ? '<p>Additional AI findings appear in the complete report.</p>' : ''}` : ''}</section>`;
+    const pageCoverage = analysis.kind === 'page_and_suggestions'
+        ? `<p>${coverage.sampledImages} of ${coverage.availableImages} images reviewed · ${coverage.textChars} text characters sampled</p>${entries ? `<ul>${entries}</ul>` : '<p>No AI concerns recorded in the sampled evidence.</p>'}`
+        : '';
+    return `<section class="check-section" aria-labelledby="ai-review"><h2 id="ai-review">AI review</h2><p>Advisory findings and suggested fixes. Human review required.</p>${warning}${analysis.status === 'pending' ? '<p>Preparing AI suggestions…</p>' : ''}${analysis.status === 'not_applicable' ? '<p>Not enough eligible evidence for an AI review.</p>' : ''}${analysis.status === 'completed' ? `${pageCoverage}<p>${suggestionCount} suggested ${suggestionCount === 1 ? 'fix' : 'fixes'} for ${coverage.selectedIssues} reviewed ${coverage.selectedIssues === 1 ? 'issue' : 'issues'}.</p>${pdf && analysis.findings.length > 5 ? '<p>Additional AI findings appear in the complete report.</p>' : ''}` : ''}</section>`;
 }
 function brandHtml(theme, whiteLabel) {
     const mark = theme.logoUrl === undefined
@@ -206716,8 +207147,8 @@ ${sharedView ? `${gateDecision}\n${scorePanel}` : `${scorePanel}\n${gateDecision
 <h2 id="severity-heading">Severity overview</h2>
 <dl class="severity-grid">${SEVERITIES.map((severity) => `<div><dt>${titleCase(severity)}</dt><dd>${input.summary.issueCounts[severity]}</dd></div>`).join('')}</dl>
 </section>
-<section class="findings-section" aria-labelledby="findings-heading"><h2 id="findings-heading">Complete findings</h2>${findingsNote}${findings}</section>
-${aiReviewHtml(input.analysis, options.profile === 'pdf-summary')}
+${input.analysis ? aiReviewHtml(input.analysis, options.profile === 'pdf-summary') + '\n' : ''}<section class="findings-section" aria-labelledby="findings-heading"><h2 id="findings-heading">Complete findings</h2>${findingsNote}${findings}</section>
+
 </main>
 <footer class="report-footer">
 <p>Generated by ${escapeText(checkedTheme.brandName)} at <time datetime="${escapeAttribute(input.generatedAt)}">${escapeText(input.generatedAt)}</time></p>
@@ -206762,7 +207193,7 @@ function redactHttpUserinfo(value) {
         return value;
     return `${prefix}${authority.slice(userinfoEnd + 1)}${value.slice(authorityEnd)}`;
 }
-function scrubUrl(value) {
+function scrub_scrubUrl(value) {
     try {
         const protocolRelative = value.startsWith('//');
         const url = new URL(protocolRelative ? `https:${value}` : value);
@@ -206897,7 +207328,7 @@ function scrubSelector(selector) {
         }
         const end = embeddedUrlEnd(selector, index, quote, quote === undefined ? delimiterStack.at(-1) : undefined);
         scrubbed += selector.slice(cursor, index);
-        scrubbed += scrubUrl(selector.slice(index, end));
+        scrubbed += scrub_scrubUrl(selector.slice(index, end));
         cursor = end;
         index = end;
     }
@@ -206907,16 +207338,16 @@ function scrubSelector(selector) {
 function scrubIssue(issue) {
     return {
         ...issue,
-        url: scrubUrl(issue.url),
+        url: scrub_scrubUrl(issue.url),
         ...(issue.selector === undefined
             ? {}
             : { selector: scrubSelector(issue.selector) }),
         ...(issue.helpUrl === undefined
             ? {}
-            : { helpUrl: scrubUrl(issue.helpUrl) }),
+            : { helpUrl: scrub_scrubUrl(issue.helpUrl) }),
     };
 }
-function scrubCheckResult(result) {
+function scrub_scrubCheckResult(result) {
     return {
         ...result,
         issues: result.issues.map(scrubIssue),
@@ -206924,10 +207355,11 @@ function scrubCheckResult(result) {
 }
 const embeddedTextUrlPattern = /\bhttps?:\/\/[^\s"'<>`]+/gi;
 function scrubText(value) {
-    return redactSecretParameters(value.replace(embeddedTextUrlPattern, (url) => scrubUrl(url)));
+    return redactSecretParameters(value.replace(embeddedTextUrlPattern, (url) => scrub_scrubUrl(url)));
 }
 //# sourceMappingURL=scrub.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/render.js
+
 
 const QUALITYGATE_COMMENT_MARKER = '<!-- qualitygate:comment-marker -->';
 // Bitbucket Cloud escapes raw HTML, so its marker is an unreferenced link
@@ -206937,7 +207369,7 @@ const ACCESSIBILITY_DISCLAIMER = 'Automated accessibility checks are a starting 
 const SEO_DISCLAIMER = 'Automated SEO checks read what this page declares; they do not predict ranking.';
 const SECURITY_DISCLAIMER = 'Automated header checks read the response of one page; they are not a penetration test.';
 const LINKS_DISCLAIMER = 'Automated link checks request the links on one page once; a host that refuses automated clients is reported as unverified, not broken.';
-const PERFORMANCE_DISCLAIMER = 'Lighthouse measures one page under simulated mobile throttling and reports the median of several loads; field data from real visitors can differ.';
+const PERFORMANCE_DISCLAIMER = 'Lighthouse measures one page in the lab under simulated throttling, mobile unless desktop was chosen, and reports the median of several loads. Lab values, including Total Blocking Time as a stand-in for INP, are not field data from real visitors and can differ.';
 const SECRETS_EXPOSURE_DISCLAIMER = 'Credential checks read the scripts and JSON this page loads from its own origin; they cannot see server-side code, and a finding means the credential must be rotated.';
 const GEO_DISCLAIMER = 'GEO checks read what this site publishes to AI crawlers and score how quotable its passages are; they do not predict whether an AI engine will cite it.';
 const SEO_DEEP_DISCLAIMER = 'Deep SEO crawls a bounded slice of the site from this page; pages beyond the crawl limit are not checked.';
@@ -206995,6 +207427,11 @@ const BUNDLE_PRESENTATION = {
         label: 'Web quality',
         noun: 'web quality',
     },
+    'full-runtime': {
+        disclaimer: `${FULL_DISCLAIMER} Runtime errors are what the browser reported during one page load.`,
+        label: 'Web quality',
+        noun: 'web quality',
+    },
 };
 const NEUTRAL_PRESENTATION = {
     disclaimer: 'Automated checks are a starting point; they do not replace review.',
@@ -207017,6 +207454,7 @@ const render_CHECK_LABELS = {
     'secrets-exposure': 'Exposed credentials',
     geo: 'AI search readiness',
     'seo-deep': 'Deep SEO',
+    'runtime-errors': 'Runtime errors',
 };
 // Checks whose engine reports its own 0-100 score (ADR-0008), and how that
 // score is named. Only these scores are shown; any other check's score is not
@@ -207039,6 +207477,66 @@ const severityRank = {
     moderate: 2,
     minor: 3,
 };
+function isSeoSummary(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    const summary = value;
+    return (typeof summary.titleLength === 'number' &&
+        typeof summary.descriptionLength === 'number' &&
+        typeof summary.h1Count === 'number' &&
+        typeof summary.hreflangCount === 'number' &&
+        typeof summary.robots === 'string');
+}
+/** One line on what the page declares for search engines. */
+function seoSummaryLine(report) {
+    const summary = report.details?.seo;
+    if (!isSeoSummary(summary))
+        return undefined;
+    const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+    const parts = [
+        summary.title === null || summary.title === ''
+            ? 'no title'
+            : `title ${formatMessage(`"${summary.title}"`)} (${plural(summary.titleLength, 'character')})`,
+        summary.descriptionLength === 0
+            ? 'no meta description'
+            : `meta description ${plural(summary.descriptionLength, 'character')}`,
+        plural(summary.h1Count, 'h1'),
+        summary.lang ? `lang ${inlineCode(summary.lang)}` : 'no lang',
+        summary.canonical
+            ? `canonical <${scrub_scrubUrl(summary.canonical)}>`
+            : 'no canonical',
+        summary.robots === ''
+            ? 'robots: indexable'
+            : `robots ${inlineCode(summary.robots)}`,
+        plural(summary.hreflangCount, 'hreflang alternate'),
+    ];
+    return `SEO: ${parts.join(' · ')}`;
+}
+/**
+ * The render input for a report response's `comparison`, computed with the
+ * same fingerprints and diff the server gated with.
+ */
+function comparisonRenderInput(results, failOn, comparison) {
+    // Without a baseline, only regression mode has anything to say about it:
+    // that nothing could be compared yet.
+    const diff = comparison?.baseline !== undefined
+        ? diffScan(results, comparison.baseline.results)
+        : failOn.mode === 'regression'
+            ? diffScan(results, undefined)
+            : undefined;
+    const previous = comparison?.previousRun;
+    return {
+        ...(diff === undefined ? {} : { diff }),
+        ...(previous === undefined
+            ? {}
+            : {
+                previousRun: {
+                    diff: diffScan(results, previous.results),
+                    previousCounts: countIssues(previous.results),
+                },
+            }),
+    };
+}
 function assertNonnegativeInteger(value, name) {
     if (!Number.isInteger(value) || value < 0) {
         throw new RangeError(`${name} must be a non-negative integer`);
@@ -207069,11 +207567,12 @@ const TRUSTED_HELP_HOSTS = [
     ['dequeuniversity.com', '/rules/axe/'],
     ['developers.google.com', '/search/docs/'],
     ['developer.mozilla.org', '/en-US/docs/Web/HTTP/'],
+    ['developer.mozilla.org', '/en-US/docs/Web/JavaScript/Reference/Errors'],
 ];
 function trustedHelpUrl(value) {
     if (value === undefined)
         return undefined;
-    const scrubbed = scrubUrl(value);
+    const scrubbed = scrub_scrubUrl(value);
     try {
         const url = new URL(scrubbed);
         if (url.protocol !== 'https:')
@@ -207144,7 +207643,7 @@ function sortedBySeverity(issues) {
  * reader otherwise has no way to see.
  */
 function allFindings(results, limit, multiCheck, truncatedHint) {
-    const lines = ['', '### All findings'];
+    const lines = [];
     let shown = 0;
     let total = 0;
     for (const result of results) {
@@ -207274,6 +207773,59 @@ function regressionSummary(diff) {
         ]
         : [line];
 }
+const SEVERITY_ROWS = [
+    ['critical', '🔴 Critical'],
+    ['serious', '🟠 Serious'],
+    ['moderate', '🟡 Moderate'],
+    ['minor', '🔵 Minor'],
+];
+function signed(value) {
+    return value > 0 ? `+${value}` : String(value);
+}
+/**
+ * What changed since this comment was last written, so "4 serious, now 0"
+ * survives the edit. Issues are counted by fingerprint, as regression mode
+ * counts them; the table counts every finding.
+ */
+function previousRunSummary(comparison, current) {
+    const { counts } = comparison.diff;
+    const unchanged = counts.new === 0 &&
+        counts.fixed === 0 &&
+        SEVERITY_ROWS.every(([severity]) => comparison.previousCounts[severity] === current[severity]);
+    const line = `**Since the previous run** ${counts.new.toLocaleString('en-US')} new · ${counts.fixed.toLocaleString('en-US')} fixed · ${counts.existing.toLocaleString('en-US')} still open`;
+    if (unchanged)
+        return [`${line} · no change`, ''];
+    return [
+        line,
+        '',
+        '| Severity | Previous | Now | Change |',
+        '| --- | ---: | ---: | ---: |',
+        ...SEVERITY_ROWS.map(([severity, label]) => {
+            const before = comparison.previousCounts[severity];
+            const now = current[severity];
+            return `| ${label} | ${before} | ${now} | ${now === before ? '0' : `**${signed(now - before)}**`} |`;
+        }),
+        '',
+    ];
+}
+/** Fixed and new issues since the previous run, for the collapsed section. */
+function previousRunLists(comparison, limit, multiCheck) {
+    if (comparison === undefined)
+        return [];
+    const lines = [];
+    const list = (title, issues) => {
+        if (issues.length === 0)
+            return;
+        lines.push(`#### ${title} (${issues.length.toLocaleString('en-US')})`, ...topIssues(issues, limit).map((entry) => formatIssue(entry, multiCheck)), ...(issues.length > limit
+            ? [
+                `${(issues.length - limit).toLocaleString('en-US')} more not listed.`,
+            ]
+            : []), '');
+    };
+    list('New since the previous run', comparison.diff.newIssues);
+    list('Fixed since the previous run', comparison.diff.fixedIssues);
+    return lines;
+}
 function decisionLine(verdict, presentation, diff) {
     if (verdict.passed) {
         // In a comparison, "passed" means nothing got worse, which is a different
@@ -207291,13 +207843,77 @@ function decisionLine(verdict, presentation, diff) {
     }
     return `> ❌ ${verdict.failReason ?? 'Configured limits were exceeded.'}`;
 }
-function renderBody(input, flavor, target) {
+const HEADER_NAMES = {
+    'strict-transport-security': 'HSTS',
+    'content-security-policy': 'CSP',
+    'content-security-policy-report-only': 'CSP (report-only, not enforced)',
+    'x-frame-options': 'X-Frame-Options',
+    'x-content-type-options': 'X-Content-Type-Options',
+    'referrer-policy': 'Referrer-Policy',
+    'permissions-policy': 'Permissions-Policy',
+    'cross-origin-opener-policy': 'COOP',
+    'cross-origin-embedder-policy': 'COEP',
+    'cross-origin-resource-policy': 'CORP',
+};
+function statusText(status) {
+    return status === null ? 'no response' : String(status);
+}
+/**
+ * Where the scan actually looked. A redirect by locale or login otherwise
+ * leaves a reader guessing which page the findings belong to.
+ */
+function pageLoadLines(report) {
+    const page = report.page;
+    if (page === undefined)
+        return [`Scanned URL: <${scrub_scrubUrl(report.url)}>`];
+    const requested = scrub_scrubUrl(page.requestedUrl);
+    const final = scrub_scrubUrl(page.finalUrl);
+    const lines = page.redirects.length === 0 && requested === final
+        ? [`Scanned URL: <${final}> (HTTP ${statusText(page.status)})`]
+        : [
+            `Requested URL: <${requested}>`,
+            '',
+            `Final URL: <${final}>`,
+            '',
+            `Redirects: ${[...page.redirects.map((hop) => statusText(hop.status)), statusText(page.status)].map((status) => `\`${status}\``).join(' → ')}`,
+        ];
+    const ranHeaders = report.results.some(({ checkId }) => checkId === 'security-headers');
+    if (ranHeaders && page.securityHeaders !== undefined) {
+        lines.push('', page.securityHeaders.length === 0
+            ? 'Security headers present: none'
+            : `Security headers present: ${page.securityHeaders.map((name) => HEADER_NAMES[name] ?? safeRuleId(name)).join(', ')}`);
+    }
+    const seo = seoSummaryLine(report);
+    if (seo !== undefined)
+        lines.push('', seo);
+    if (ranHeaders && page.scriptPolicy !== undefined) {
+        for (const line of page.scriptPolicy) {
+            lines.push('', `Script policy: ${line.replace(/[<>@#|]/g, '')}`);
+        }
+    }
+    return lines;
+}
+function totalIssueCount(results) {
+    return results.reduce((total, result) => total + result.issues.length, 0);
+}
+function collapsible(flavor, summary, body, headingLevel = 3) {
+    // Bitbucket Cloud escapes raw HTML, so nothing there can collapse; a heading
+    // keeps the section findable instead.
+    return flavor === 'bitbucket'
+        ? [`${'#'.repeat(headingLevel)} ${summary}`, '', ...body]
+        : [
+            '<details>',
+            `<summary>${summary}</summary>`,
+            '',
+            ...body,
+            '',
+            '</details>',
+        ];
+}
+function renderParts(input, target, findingLimitDefault) {
     const limit = input.topIssueLimit ?? DEFAULT_TOP_ISSUE_LIMIT;
     assertNonnegativeInteger(limit, 'topIssueLimit');
-    const findingLimit = input.findingLimit ??
-        (target === 'comment'
-            ? DEFAULT_COMMENT_FINDING_LIMIT
-            : DEFAULT_SUMMARY_FINDING_LIMIT);
+    const findingLimit = input.findingLimit ?? findingLimitDefault;
     assertNonnegativeInteger(findingLimit, 'findingLimit');
     if (input.report.results.length === 0) {
         throw new TypeError('Expected at least one check result to render');
@@ -207317,22 +207933,74 @@ function renderBody(input, flavor, target) {
             ...topIssues(input.diff.existingIssues, limit),
         ].slice(0, limit)
         : topIssues(attributedIssues(input.report.results), limit);
-    const issueLines = selectedIssues.length === 0
-        ? ['No prioritized issues to show.']
-        : selectedIssues.map((entry) => formatIssue(entry, multiCheck));
-    // A single-check bundle would render a one-row table restating the severity
-    // table above it, so the breakdown appears only where it adds something.
-    const breakdownLines = multiCheck
-        ? ['', '### Findings by check', ...checkBreakdown(input.report.results)]
-        : [];
-    const totalIssues = input.report.results.reduce((total, result) => total + result.issues.length, 0);
-    // When the prioritized list already shows everything, a second copy of it
-    // would only make the comment longer.
-    const allFindingLines = totalIssues > selectedIssues.length
-        ? allFindings(input.report.results, findingLimit, multiCheck, target === 'comment'
+    const totalIssues = totalIssueCount(input.report.results);
+    const prioritized = selectedIssues.length === 0
+        ? []
+        : [
+            totalIssues > selectedIssues.length
+                ? `**Top ${selectedIssues.length} of ${totalIssues.toLocaleString('en-US')} findings**`
+                : `**${totalIssues === 1 ? 'Finding' : 'Findings'}**`,
+            ...selectedIssues.map((entry) => formatIssue(entry, multiCheck)),
+        ];
+    const hint = input.reportFile !== undefined
+        ? ` Every finding is in \`${input.reportFile.replace(/[`\s]/g, '')}\`, saved with this pipeline run.`
+        : target === 'comment'
             ? " The workflow run's job summary lists more."
-            : '')
+            : '';
+    // The full list is always there when the prioritized one leaves anything
+    // out, so no finding is hidden from the reader.
+    const findingLines = totalIssues > selectedIssues.length
+        ? [
+            `#### All findings (${totalIssues.toLocaleString('en-US')})`,
+            ...allFindings(input.report.results, findingLimit, multiCheck, hint),
+            '',
+        ]
         : [];
+    return {
+        decision: decisionLine(input.summary, presentation, input.diff),
+        headline: [
+            ...naturalScoreLines(input.report.results),
+            ...(input.aiReview
+                ? [
+                    input.aiReview.status === 'pending'
+                        ? `**AI review queued** · [View advisory findings when ready](<${input.aiReview.url}>)`
+                        : `**AI review available** · [Open this run to request suggested fixes](<${input.aiReview.url}>)`,
+                    '',
+                ]
+                : []),
+            ...(input.diff === undefined
+                ? []
+                : [...regressionSummary(input.diff), '']),
+            ...(input.previousRun === undefined
+                ? []
+                : previousRunSummary(input.previousRun, input.summary.issueCounts)),
+            ...severityTable(input.summary, input.failOn, input.diff),
+            ...(multiCheck
+                ? [
+                    '',
+                    '#### Findings by check',
+                    ...checkBreakdown(input.report.results),
+                ]
+                : []),
+        ],
+        prioritized,
+        details: [
+            ...previousRunLists(input.previousRun, Math.min(findingLimit, 20), multiCheck),
+            ...findingLines,
+            ...pageLoadLines(input.report),
+            '',
+            presentation.disclaimer,
+        ],
+        detailsSummary: findingLines.length > 0
+            ? `All ${totalIssues.toLocaleString('en-US')} findings and scan details`
+            : 'Scan details and limitations',
+    };
+}
+function renderBody(input, flavor, target) {
+    const parts = renderParts(input, target, target === 'comment'
+        ? DEFAULT_COMMENT_FINDING_LIMIT
+        : DEFAULT_SUMMARY_FINDING_LIMIT);
+    const presentation = presentationFor(input.report.bundleId);
     return [
         input.summary.passed
             ? '## ✅ QualityGate passed'
@@ -207340,28 +208008,89 @@ function renderBody(input, flavor, target) {
         '',
         `**${presentation.label}** · \`${input.report.bundleId}\` · [qualitygate.dev](https://qualitygate.dev/)`,
         '',
-        decisionLine(input.summary, presentation, input.diff),
+        parts.decision,
         '',
-        ...naturalScoreLines(input.report.results),
-        ...(input.diff === undefined ? [] : [...regressionSummary(input.diff), '']),
-        ...severityTable(input.summary, input.failOn, input.diff),
-        ...breakdownLines,
+        ...parts.headline,
         '',
         usageLine(input),
         '',
-        ...(flavor === 'bitbucket'
-            ? ['### Scan details and limitations']
-            : ['<details>', '<summary>Scan details and limitations</summary>']),
-        '',
-        `Scanned URL: <${scrubUrl(input.report.url)}>`,
-        '',
-        '### Prioritized issues',
-        ...issueLines,
-        ...allFindingLines,
-        '',
-        presentation.disclaimer,
-        ...(flavor === 'bitbucket' ? [] : ['', '</details>']),
+        ...(parts.prioritized.length === 0
+            ? []
+            : ['### Prioritized issues', ...parts.prioritized, '']),
+        ...collapsible(flavor, parts.detailsSummary, parts.details),
     ].join('\n');
+}
+function pageLabel(report) {
+    const url = scrubUrl(report.page?.requestedUrl ?? report.url);
+    try {
+        const parsed = new URL(url);
+        return `${parsed.pathname}${parsed.search}`;
+    }
+    catch {
+        return url;
+    }
+}
+/**
+ * Several pages scanned in one CI step, as one comment: a summary table first,
+ * then one section per page. Each page keeps its own server verdict; the run
+ * passes only when every page passed.
+ */
+function renderMultiBody(entries, flavor, target, combined) {
+    const [first] = entries;
+    if (first === undefined) {
+        throw new TypeError('Expected at least one scanned page to render');
+    }
+    const passed = combined?.passed ?? entries.every((entry) => entry.summary.passed);
+    const presentation = presentationFor(first.report.bundleId);
+    // Shared between the pages, so a long run still fits one comment.
+    const perPageLimit = Math.max(10, Math.floor((target === 'comment'
+        ? DEFAULT_COMMENT_FINDING_LIMIT * 2
+        : DEFAULT_SUMMARY_FINDING_LIMIT) / entries.length));
+    const failedCount = entries.filter((entry) => !entry.summary.passed).length;
+    const lines = [
+        passed ? '## ✅ QualityGate passed' : '## ❌ QualityGate needs attention',
+        '',
+        `**${presentation.label}** · \`${first.report.bundleId}\` · ${entries.length} pages · [qualitygate.dev](https://qualitygate.dev/)`,
+        '',
+        combined === undefined
+            ? passed
+                ? `> ✅ Every page is within its configured limits.`
+                : `> ❌ ${failedCount} of ${entries.length} pages exceeded the configured limits.`
+            : combined.passed
+                ? `> ✅ The findings of all ${entries.length} pages together are within the configured limits.`
+                : `> ❌ All ${entries.length} pages together: ${combined.failReason ?? 'configured limits were exceeded.'}`,
+        '',
+        '| Page | Result | 🔴 | 🟠 | 🟡 | 🔵 |',
+        '| --- | :---: | ---: | ---: | ---: | ---: |',
+        ...entries.map(({ report, summary }) => {
+            const counts = summary.issueCounts;
+            return `| ${inlineCode(pageLabel(report)).replace(/\|/g, '\\|')} | ${summary.passed ? '✅' : '❌'} | ${counts.critical} | ${counts.serious} | ${counts.moderate} | ${counts.minor} |`;
+        }),
+        ...(combined === undefined
+            ? []
+            : [
+                `| **All pages** | ${combined.passed ? '✅' : '❌'} | **${combined.issueCounts.critical}** | **${combined.issueCounts.serious}** | **${combined.issueCounts.moderate}** | **${combined.issueCounts.minor}** |`,
+                '',
+                "The limits apply to all pages together. Each page's own result is shown for reference.",
+            ]),
+        '',
+        usageLine(entries[entries.length - 1]),
+    ];
+    for (const entry of entries) {
+        const parts = renderParts(entry, target, perPageLimit);
+        lines.push('', `### ${entry.summary.passed ? '✅' : '❌'} ${inlineCode(pageLabel(entry.report))}`, '', parts.decision, '', ...parts.prioritized, ...(parts.prioritized.length === 0 ? [] : ['']), ...collapsible(flavor, parts.detailsSummary, [...parts.headline, '', ...parts.details], 4));
+    }
+    return lines.join('\n');
+}
+function renderMultiPrComment(entries, options = {}) {
+    const flavor = options.flavor ?? 'github';
+    const marker = flavor === 'bitbucket'
+        ? QUALITYGATE_BITBUCKET_COMMENT_MARKER
+        : QUALITYGATE_COMMENT_MARKER;
+    return `${renderMultiBody(entries, flavor, 'comment', options.combined)}\n${marker}`;
+}
+function renderMultiJobSummary(entries, options = {}) {
+    return renderMultiBody(entries, 'github', 'summary', options.combined);
 }
 function renderPrComment(input, options = {}) {
     const flavor = options.flavor ?? 'github';
@@ -207384,9 +208113,14 @@ function renderLogSummary(input) {
         summary.passed
             ? 'QualityGate passed.'
             : `QualityGate failed: ${summary.failReason ?? 'configured limits were exceeded.'}`,
-        `Scanned ${scrubUrl(report.url)} with the ${safeRuleId(report.bundleId)} bundle.`,
+        report.page !== undefined &&
+            scrub_scrubUrl(report.page.finalUrl) !== scrub_scrubUrl(report.page.requestedUrl)
+            ? `Scanned ${scrub_scrubUrl(report.page.requestedUrl)} with the ${safeRuleId(report.bundleId)} bundle; it redirected to ${scrub_scrubUrl(report.page.finalUrl)}.`
+            : `Scanned ${scrub_scrubUrl(report.url)} with the ${safeRuleId(report.bundleId)} bundle.`,
         `Found ${counts.critical} critical (max ${failOn.maxCritical}), ${counts.serious} serious (max ${failOn.maxSerious}), ${counts.moderate} moderate, ${counts.minor} minor.`,
     ];
+    if (input.aiReview)
+        lines.push(`AI review ${input.aiReview.status === 'pending' ? 'queued' : 'available'}. ${input.aiReview.url}`);
     for (const result of report.results) {
         if (result.issues.length === 0)
             continue;
@@ -207403,7 +208137,49 @@ function renderLogSummary(input) {
     return lines.join('\n');
 }
 //# sourceMappingURL=render.js.map
+;// CONCATENATED MODULE: ../reporting/dist/report-json.js
+
+const REPORT_FILE_NAME = 'qualitygate-report.json';
+/**
+ * Every finding of every scanned page as JSON, for an artifact that keeps what
+ * a comment has no room for. It holds the same scrubbed data the comment does.
+ */
+function renderReportFile(entries, 
+/** The server's verdict over every page together, when one was asked for. */
+combined) {
+    return `${JSON.stringify({
+        passed: combined?.passed ?? entries.every(({ summary }) => summary.passed),
+        ...(combined === undefined ? {} : { combined }),
+        pages: entries.map(({ report, summary, failOn }) => ({
+            url: scrubUrl(report.url),
+            ...(report.page === undefined
+                ? {}
+                : {
+                    finalUrl: scrubUrl(report.page.finalUrl),
+                    status: report.page.status,
+                    redirects: report.page.redirects.map((hop) => ({
+                        url: scrubUrl(hop.url),
+                        status: hop.status,
+                    })),
+                    securityHeaders: report.page.securityHeaders ?? [],
+                }),
+            ...(report.details?.seo === undefined
+                ? {}
+                : { seo: report.details.seo }),
+            bundle: report.bundleId,
+            passed: summary.passed,
+            ...(summary.failReason === undefined
+                ? {}
+                : { failReason: summary.failReason }),
+            issueCounts: summary.issueCounts,
+            failOn,
+            results: report.results.map(scrubCheckResult),
+        })),
+    }, null, 2)}\n`;
+}
+//# sourceMappingURL=report-json.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/index.js
+
 
 
 
@@ -207514,7 +208290,7 @@ async function readPageSignals(page) {
     const base = page.url();
     const absolute = (href) => {
         const url = normalizeCrawlUrl(href, base);
-        return url === null ? null : scrubUrl(url);
+        return url === null ? null : scrub_scrubUrl(url);
     };
     return {
         canonical: raw.canonical === null ? null : absolute(raw.canonical),
@@ -207752,7 +208528,7 @@ const geoCheck = {
         const collected = {
             jsonLd: [...signals.jsonLd],
             passages: [...signals.passages],
-            url: scrubUrl(context.url),
+            url: scrub_scrubUrl(context.url),
         };
         return {
             checkId: GEO_CHECK_ID,
@@ -207765,7 +208541,160 @@ const geoCheck = {
     },
 };
 //# sourceMappingURL=geo.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/hreflang.js
+const hreflang_HELP = 'https://developers.google.com/search/docs/specialty/international/localized-versions';
+// BCP 47 as Google accepts it for hreflang: a language, an optional script,
+// an optional region, or x-default.
+const HREFLANG_CODE = /^(x-default|[a-z]{2,3}(-[a-z]{4})?(-([a-z]{2}|\d{3}))?)$/i;
+/** How many alternates are requested, so a huge set cannot stall a scan. */
+const MAX_HREFLANG_REQUESTS = 20;
+const CONCURRENCY = 5;
+const REQUEST_TIMEOUT_MS = 10_000;
+function selector(hreflang) {
+    return `link[rel="alternate"][hreflang="${hreflang.replace(/"/g, '')}"]`;
+}
+function normalizedPath(url) {
+    const path = url.pathname.replace(/\/+$/, '');
+    return `${path === '' ? '/' : path}${url.search}`;
+}
+/**
+ * Whether an hreflang href names this page. A preview's alternates usually
+ * point at production, so the path decides, not the host.
+ */
+function namesPage(href, pages) {
+    let target;
+    try {
+        target = new URL(href);
+    }
+    catch {
+        return false;
+    }
+    return pages.some((page) => {
+        if (!page)
+            return false;
+        try {
+            return normalizedPath(new URL(page)) === normalizedPath(target);
+        }
+        catch {
+            return false;
+        }
+    });
+}
+/** The hreflang alternates a served HTML document declares, resolved. */
+function parseHreflangLinks(html, documentUrl) {
+    const alternates = [];
+    for (const [tag] of html.matchAll(/<link\b[^>]*>/gi)) {
+        const attribute = (name) => {
+            const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
+            return match?.[1] ?? match?.[2] ?? match?.[3];
+        };
+        const rel = attribute('rel')?.toLowerCase().split(/\s+/) ?? [];
+        const hreflang = attribute('hreflang');
+        const href = attribute('href');
+        if (!rel.includes('alternate') || !hreflang || !href)
+            continue;
+        try {
+            alternates.push({
+                hreflang,
+                href: new URL(href, documentUrl).toString(),
+            });
+        }
+        catch {
+            // An href that cannot be resolved is skipped; it links nowhere.
+        }
+    }
+    return alternates;
+}
+const defaultFetch = async (url, init) => {
+    const response = await fetch(url, {
+        headers: init?.headers,
+        method: init?.method ?? 'GET',
+        signal: init?.signal,
+    });
+    return {
+        headers: response.headers,
+        status: response.status,
+        url: response.url,
+        text: () => response.text(),
+    };
+};
+async function mapLimited(items, limit, task) {
+    const results = new Array(items.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (next < items.length) {
+            const index = next;
+            next += 1;
+            results[index] = await task(items[index]);
+        }
+    }));
+    return results;
+}
+/**
+ * Checks the page's hreflang set: valid codes, a reference to the page itself,
+ * and for every other alternate a 200 response that links back. Without the
+ * return link Google ignores the pair. Findings are moderate: they cost
+ * international ranking, never a broken page.
+ */
+async function verifyHreflang(alternates, page, fetcher = defaultFetch) {
+    if (alternates.length === 0)
+        return [];
+    const issues = [];
+    const add = (ruleId, severity, hreflang, message) => issues.push({
+        ruleId,
+        severity,
+        message,
+        url: page.url,
+        selector: selector(hreflang),
+        helpUrl: hreflang_HELP,
+    });
+    const self = [page.finalUrl, page.canonical];
+    for (const alternate of alternates) {
+        if (!HREFLANG_CODE.test(alternate.hreflang)) {
+            add('hreflang-invalid', 'moderate', alternate.hreflang, `\`${alternate.hreflang}\` is not a valid hreflang code. Use a language such as \`de\`, optionally with a region such as \`de-AT\`, or \`x-default\`.`);
+        }
+    }
+    if (!alternates.some(({ href }) => namesPage(href, self))) {
+        add('hreflang-self-missing', 'minor', 'self', 'The hreflang set does not include this page itself. Each language version should list itself as well as the others.');
+    }
+    const seen = new Set();
+    const others = alternates.filter(({ href }) => {
+        if (namesPage(href, self) || seen.has(href))
+            return false;
+        seen.add(href);
+        return true;
+    });
+    await mapLimited(others.slice(0, MAX_HREFLANG_REQUESTS), CONCURRENCY, async (alternate) => {
+        let response;
+        try {
+            response = await fetcher(alternate.href, {
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+        }
+        catch {
+            add('hreflang-target-status', 'moderate', alternate.hreflang, `The \`${alternate.hreflang}\` alternate \`${alternate.href}\` could not be requested.`);
+            return;
+        }
+        const redirected = response.url !== '' &&
+            normalizedPath(new URL(response.url)) !==
+                normalizedPath(new URL(alternate.href));
+        if (response.status !== 200 || redirected) {
+            add('hreflang-target-status', 'moderate', alternate.hreflang, redirected
+                ? `The \`${alternate.hreflang}\` alternate \`${alternate.href}\` redirects to \`${response.url}\`. hreflang should name the final URL.`
+                : `The \`${alternate.hreflang}\` alternate \`${alternate.href}\` returns HTTP ${response.status}, not 200.`);
+            return;
+        }
+        const html = await response.text().catch(() => '');
+        const back = parseHreflangLinks(html, response.url || alternate.href);
+        if (!back.some(({ href }) => namesPage(href, [...self, page.url]))) {
+            add('hreflang-no-return-link', 'moderate', alternate.hreflang, `The \`${alternate.hreflang}\` alternate \`${alternate.href}\` does not link back to this page, so search engines ignore the pair.`);
+        }
+    });
+    return issues;
+}
+//# sourceMappingURL=hreflang.js.map
 ;// CONCATENATED MODULE: ../core/dist/checks/seo.js
+
 
 const SEO_CHECK_ID = 'seo';
 // Shallow, single-page SEO signals read from the rendered document (QG-P1-FF1).
@@ -207788,6 +208717,59 @@ const TITLE_MIN_LENGTH = 10;
 const TITLE_MAX_LENGTH = 60;
 const DESCRIPTION_MIN_LENGTH = 50;
 const DESCRIPTION_MAX_LENGTH = 160;
+// Directives that take a value after a colon, so the colon does not name a
+// crawler: `unavailable_after: 2026-12-01`.
+const VALUED_DIRECTIVES = new Set([
+    'unavailable_after',
+    'max-snippet',
+    'max-image-preview',
+    'max-video-preview',
+]);
+/**
+ * Whether an `X-Robots-Tag` value keeps the page out of Google's index:
+ * `noindex` or `none`, for every crawler or for `googlebot`. Directives for
+ * other crawlers are not Google's concern.
+ */
+function headerSaysNoindex(value) {
+    if (value === undefined)
+        return false;
+    return value
+        .toLowerCase()
+        .split(/[,\n]/)
+        .some((part) => {
+        const scoped = /^\s*([a-z0-9_-]+)\s*:\s*(.+)$/.exec(part);
+        const agent = scoped && !VALUED_DIRECTIVES.has(scoped[1]) ? scoped[1] : undefined;
+        const directive = (agent === undefined ? part : scoped[2]).trim();
+        return ((directive === 'noindex' || directive === 'none') &&
+            (agent === undefined || agent === 'googlebot'));
+    });
+}
+// Separators sites put between page and brand in a title: a pipe, a hyphen,
+// an en or em dash, a middle dot or a colon, with spaces around it.
+const TITLE_SEPARATOR = /\s+[|\u2013\u2014\u00b7:-]\s+/;
+/** A segment that appears twice, such as "Brand" in "Shoes | Brand | Brand". */
+function repeatedTitleSegment(title) {
+    const seen = new Set();
+    for (const segment of title.split(TITLE_SEPARATOR)) {
+        const key = segment.trim().toLowerCase();
+        if (key === '')
+            continue;
+        if (seen.has(key))
+            return segment.trim();
+        seen.add(key);
+    }
+    return undefined;
+}
+function comparablePath(value) {
+    try {
+        const url = new URL(value);
+        const path = url.pathname.replace(/\/+$/, '');
+        return `${path === '' ? '/' : path}${url.search}`;
+    }
+    catch {
+        return undefined;
+    }
+}
 function isAbsoluteHttpUrl(value) {
     try {
         return ['http:', 'https:'].includes(new URL(value).protocol);
@@ -207800,7 +208782,9 @@ function isAbsoluteHttpUrl(value) {
  * Maps a document snapshot onto issues. Pure and exported so the rule set can be
  * tested against fixtures without launching a browser.
  */
-function evaluateSeoSignals(signals, pageUrl) {
+function evaluateSeoSignals(signals, pageUrl, 
+/** Where the page ended up after redirects; defaults to `pageUrl`. */
+finalUrl = pageUrl) {
     const issues = [];
     const add = (ruleId, severity, message, helpUrl, selector) => {
         issues.push({
@@ -207822,6 +208806,10 @@ function evaluateSeoSignals(signals, pageUrl) {
     else if (title.length > TITLE_MAX_LENGTH) {
         add('title-length', 'moderate', `The title is ${title.length} characters and is usually truncated in search results past ${TITLE_MAX_LENGTH}.`, seo_HELP.title, 'head > title');
     }
+    const repeated = title === '' ? undefined : repeatedTitleSegment(title);
+    if (repeated !== undefined) {
+        add('title-duplicate-segment', 'moderate', `The title repeats "${repeated}", usually a brand suffix added twice, for example by a template and a plugin.`, seo_HELP.title, 'head > title');
+    }
     const description = signals.description?.trim() ?? '';
     if (description.length === 0) {
         add('meta-description-missing', 'moderate', 'The page has no meta description, so search engines will compose a snippet from the page body instead.', seo_HELP.description, 'head > meta[name="description"]');
@@ -207838,6 +208826,16 @@ function evaluateSeoSignals(signals, pageUrl) {
     else if (!isAbsoluteHttpUrl(signals.canonical)) {
         add('canonical-invalid', 'moderate', 'The canonical URL is not an absolute HTTP or HTTPS URL, so it will be ignored.', seo_HELP.canonical, 'head > link[rel="canonical"]');
     }
+    else {
+        // Hosts are not compared: a preview's canonical usually names production.
+        const canonicalPath = comparablePath(signals.canonical);
+        const pagePath = comparablePath(finalUrl);
+        if (canonicalPath !== undefined &&
+            pagePath !== undefined &&
+            canonicalPath !== pagePath) {
+            add('canonical-points-elsewhere', 'moderate', `The canonical URL points to \`${canonicalPath}\`, not to this page (\`${pagePath}\`), so search engines index that page instead of this one.`, seo_HELP.canonical, 'head > link[rel="canonical"]');
+        }
+    }
     if (signals.h1Count === 0) {
         add('h1-missing', 'serious', 'The page has no h1, so nothing states what this page is about.', seo_HELP.heading, 'h1');
     }
@@ -207853,8 +208851,13 @@ function evaluateSeoSignals(signals, pageUrl) {
     // Previews are frequently noindex on purpose, so this reports at a severity
     // that never fails the default gate. It still matters: the same configuration
     // reaching production would remove the page from search entirely.
-    if (signals.noindex) {
-        add('robots-noindex', 'moderate', 'The page asks search engines not to index it. Preview environments often set this deliberately; confirm production does not.', seo_HELP.robots, 'head > meta[name="robots"]');
+    if (signals.noindex || signals.headerNoindex === true) {
+        add('robots-noindex', 'moderate', signals.noindex
+            ? 'The page asks search engines not to index it. Preview environments often set this deliberately; confirm production does not.'
+            : 'The `X-Robots-Tag` response header asks search engines not to index this page. Preview environments often set this deliberately; confirm production does not.', seo_HELP.robots, 
+        // The selector stays the same for both sources, so a page that moves
+        // the directive from the markup to the header keeps its fingerprint.
+        'head > meta[name="robots"]');
     }
     if (signals.openGraphTitle === null) {
         add('og-title-missing', 'minor', 'The page has no og:title, so links shared to social platforms fall back to whatever those platforms infer.', seo_HELP.openGraph, 'head > meta[property="og:title"]');
@@ -207889,19 +208892,327 @@ const seoCheck = {
                     openGraphTitle: attribute('meta[property="og:title"]', 'content'),
                     title: document.querySelector('title')?.textContent ?? null,
                     viewport: attribute('meta[name="viewport"]', 'content'),
+                    lang: document.documentElement.getAttribute('lang')?.trim() || null,
+                    robots: robots === '' ? null : robots,
+                    hreflang: Array.from(document.querySelectorAll('link[rel~="alternate"][hreflang][href]')).map((link) => ({
+                        hreflang: link.getAttribute('hreflang')?.trim() ?? '',
+                        // `.href` is resolved against the document, like a crawler does.
+                        href: link.href,
+                    })),
                 };
             });
         }
         catch (error) {
             throw new ScanInfrastructureError('seo_analysis_failed', 'The page could not be inspected for SEO signals', error);
         }
+        const headers = context.responseHeaders ?? {};
+        signals = {
+            ...signals,
+            headerNoindex: headerSaysNoindex(headers['x-robots-tag']),
+        };
+        const finalUrl = context.finalUrl ?? context.url;
+        const hreflangIssues = await verifyHreflang(signals.hreflang ?? [], { url: context.url, finalUrl, canonical: signals.canonical }, context.guardedFetch);
+        const title = signals.title?.trim() ?? null;
+        const details = {
+            title,
+            titleLength: title?.length ?? 0,
+            descriptionLength: signals.description?.trim().length ?? 0,
+            h1Count: signals.h1Count,
+            lang: signals.lang ?? null,
+            canonical: signals.canonical,
+            robots: [
+                signals.robots ?? '',
+                headers['x-robots-tag'] === undefined
+                    ? ''
+                    : `X-Robots-Tag: ${headers['x-robots-tag']}`,
+            ]
+                .filter((part) => part !== '')
+                .join('; '),
+            hreflangCount: signals.hreflang?.length ?? 0,
+        };
         return {
             checkId: SEO_CHECK_ID,
-            issues: evaluateSeoSignals(signals, context.url),
+            issues: [
+                ...evaluateSeoSignals(signals, context.url, finalUrl),
+                ...hreflangIssues,
+            ],
+            details,
         };
     },
 };
 //# sourceMappingURL=seo.js.map
+;// CONCATENATED MODULE: ../core/dist/ignore.js
+const MAX_IGNORE_PATTERNS = 50;
+const MAX_IGNORE_PATTERN_LENGTH = 500;
+class IgnorePatternError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'IgnorePatternError';
+    }
+}
+function escapeRegExp(value) {
+    return value.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+}
+/**
+ * Compiles one entry. `/source/flags` is a regular expression searched
+ * anywhere in the value. Anything else is a glob that must match the whole
+ * value, where `*` matches any run of characters (including `/`).
+ */
+function compileIgnorePattern(entry) {
+    const source = entry.trim();
+    if (source === '')
+        throw new IgnorePatternError('An ignore pattern is empty.');
+    if (source.length > MAX_IGNORE_PATTERN_LENGTH) {
+        throw new IgnorePatternError(`An ignore pattern is longer than ${MAX_IGNORE_PATTERN_LENGTH} characters.`);
+    }
+    const regex = /^\/(.+)\/([a-z]*)$/.exec(source);
+    if (regex !== null) {
+        let compiled;
+        try {
+            // `g` and `y` make test() stateful, so they are dropped.
+            compiled = new RegExp(regex[1], regex[2].replace(/[gy]/g, ''));
+        }
+        catch {
+            throw new IgnorePatternError(`The ignore pattern ${source} is not a valid regular expression.`);
+        }
+        return { source, test: (value) => compiled.test(value) };
+    }
+    const glob = new RegExp(`^${source.split('*').map(escapeRegExp).join('.*')}$`);
+    return { source, test: (value) => glob.test(value) };
+}
+/**
+ * Parses QUALITYGATE_IGNORE: one pattern per line, or comma separated on a
+ * single line. A regular expression containing a comma needs its own line.
+ */
+function parseIgnorePatterns(value) {
+    if (value === undefined || value.trim() === '')
+        return [];
+    const entries = (value.includes('\n') ? value.split(/\r?\n/) : value.split(','))
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== '' && !entry.startsWith('#'));
+    if (entries.length > MAX_IGNORE_PATTERNS) {
+        throw new IgnorePatternError(`At most ${MAX_IGNORE_PATTERNS} ignore patterns are supported.`);
+    }
+    return entries.map(compileIgnorePattern);
+}
+/**
+ * Whether a request URL is ignored. A pattern may name the full URL or only
+ * its path and query, so `/cdn-cgi/image/*` works on any host.
+ */
+function isIgnoredUrl(patterns, url) {
+    let pathAndQuery;
+    try {
+        const parsed = new URL(url);
+        pathAndQuery = `${parsed.pathname}${parsed.search}`;
+    }
+    catch {
+        pathAndQuery = undefined;
+    }
+    return patterns.some((pattern) => pattern.test(url) ||
+        (pathAndQuery !== undefined && pattern.test(pathAndQuery)));
+}
+function isIgnoredMessage(patterns, message) {
+    return patterns.some((pattern) => pattern.test(message));
+}
+//# sourceMappingURL=ignore.js.map
+;// CONCATENATED MODULE: ../core/dist/checks/runtime-errors.js
+
+const RUNTIME_ERRORS_CHECK_ID = 'runtime-errors';
+// What broke in the browser while the page loaded: uncaught exceptions,
+// console errors and subresources that failed. One finding per distinct
+// problem, so 17 failed thumbnails from one resizer are one finding with a
+// count, not 17 rows.
+const runtime_errors_HELP = {
+    error: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Errors',
+    status: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Status',
+};
+const DEFAULT_RUNTIME_SEVERITIES = {
+    exception: 'serious',
+    'failed-script': 'serious',
+    'failed-stylesheet': 'serious',
+    'failed-image': 'moderate',
+    'failed-font': 'moderate',
+    'console-error': 'minor',
+};
+const REQUEST_KINDS = {
+    script: 'failed-script',
+    stylesheet: 'failed-stylesheet',
+    image: 'failed-image',
+    font: 'failed-font',
+};
+const RULE_IDS = {
+    exception: 'uncaught-exception',
+    'console-error': 'console-error',
+    'failed-script': 'failed-script-request',
+    'failed-stylesheet': 'failed-stylesheet-request',
+    'failed-image': 'failed-image-request',
+    'failed-font': 'failed-font-request',
+};
+const NOUNS = {
+    exception: 'uncaught exception',
+    'console-error': 'console error',
+    'failed-script': 'script request',
+    'failed-stylesheet': 'stylesheet request',
+    'failed-image': 'image request',
+    'failed-font': 'font request',
+};
+/** Network errors that are not a fault of the page: cancellation and blocking. */
+const BENIGN_NETWORK_ERRORS = new Set([
+    'net::ERR_ABORTED',
+    'net::ERR_BLOCKED_BY_CLIENT',
+]);
+/** At most this many findings per kind, so a broken page cannot flood a report. */
+const MAX_FINDINGS_PER_KIND = 25;
+const SETTLE_TIMEOUT_MS = 10_000;
+/**
+ * Groups request URLs by their first two path segments, so resized variants of
+ * one image service collapse into `/cdn-cgi/image/*`. Same-origin requests are
+ * named by path; third-party ones keep their host.
+ */
+function requestPattern(url, pageUrl) {
+    let parsed;
+    try {
+        parsed = new URL(url);
+    }
+    catch {
+        return url;
+    }
+    const segments = parsed.pathname.split('/').filter((part) => part !== '');
+    const path = segments.length > 2
+        ? `/${segments.slice(0, 2).join('/')}/*`
+        : `/${segments.join('/')}`;
+    let sameOrigin = false;
+    try {
+        sameOrigin = new URL(pageUrl).origin === parsed.origin;
+    }
+    catch {
+        sameOrigin = false;
+    }
+    return sameOrigin ? path : `${parsed.origin}${path}`;
+}
+/** Digits vary between otherwise identical messages (ids, line numbers). */
+function messageKey(message) {
+    return message.replace(/\d+/g, 'N').replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+function firstLine(message) {
+    return (message.split('\n')[0] ?? message).trim();
+}
+// Chromium logs every failed subresource a second time as a console error.
+// The request finding already reports it, with its URL and status.
+const RESOURCE_CONSOLE_ECHO = /^Failed to load resource\b/i;
+function readSeverities(config) {
+    const severities = { ...DEFAULT_RUNTIME_SEVERITIES };
+    const overrides = config.severities;
+    if (typeof overrides !== 'object' || overrides === null)
+        return severities;
+    for (const [kind, severity] of Object.entries(overrides)) {
+        if (kind in severities &&
+            ['critical', 'serious', 'moderate', 'minor'].includes(severity)) {
+            severities[kind] = severity;
+        }
+    }
+    return severities;
+}
+/**
+ * Maps collected events onto findings. Pure and exported so grouping, ignore
+ * patterns and severities are tested without a browser.
+ */
+function evaluateRuntimeEvents(events, pageUrl, options = {}) {
+    const ignore = options.ignore ?? [];
+    const severities = options.severities ?? DEFAULT_RUNTIME_SEVERITIES;
+    const groups = new Map();
+    const add = (key, group) => {
+        const existing = groups.get(key);
+        if (existing)
+            existing.count += 1;
+        else
+            groups.set(key, { ...group, count: 1 });
+    };
+    for (const event of events) {
+        if (event.kind === 'failed-request') {
+            const kind = REQUEST_KINDS[event.resourceType];
+            if (kind === undefined)
+                continue;
+            if (event.errorText && BENIGN_NETWORK_ERRORS.has(event.errorText))
+                continue;
+            if (isIgnoredUrl(ignore, event.url))
+                continue;
+            const pattern = requestPattern(event.url, options.finalUrl ?? pageUrl);
+            const detail = event.status !== undefined
+                ? `HTTP ${event.status}`
+                : (event.errorText ?? 'a network error');
+            add(`${kind}\n${pattern}\n${detail}`, {
+                kind,
+                detail,
+                example: event.url,
+                pattern,
+            });
+            continue;
+        }
+        const message = firstLine(event.message);
+        if (message === '')
+            continue;
+        if (event.kind === 'console-error' && RESOURCE_CONSOLE_ECHO.test(message))
+            continue;
+        if (isIgnoredMessage(ignore, message))
+            continue;
+        const kind = event.kind === 'exception' ? 'exception' : 'console-error';
+        add(`${kind}\n${messageKey(message)}`, { kind, detail: message });
+    }
+    const perKind = new Map();
+    const issues = [];
+    for (const group of groups.values()) {
+        const seen = perKind.get(group.kind) ?? 0;
+        if (seen >= MAX_FINDINGS_PER_KIND)
+            continue;
+        perKind.set(group.kind, seen + 1);
+        const times = group.count === 1 ? '' : ` (${group.count} times)`;
+        if (group.pattern !== undefined) {
+            const noun = `${NOUNS[group.kind]}${group.count === 1 ? '' : 's'}`;
+            issues.push({
+                ruleId: RULE_IDS[group.kind],
+                severity: severities[group.kind],
+                message: `${group.count} ${noun} matching \`${group.pattern}\` failed with ${group.detail}, for example \`${group.example}\`. If this only happens on this environment, add the pattern to QUALITYGATE_IGNORE.`,
+                url: pageUrl,
+                selector: group.pattern,
+                helpUrl: runtime_errors_HELP.status,
+            });
+        }
+        else {
+            issues.push({
+                ruleId: RULE_IDS[group.kind],
+                severity: severities[group.kind],
+                message: `${group.kind === 'exception' ? 'Uncaught exception' : 'Console error'}${times}: ${group.detail}`,
+                url: pageUrl,
+                helpUrl: runtime_errors_HELP.error,
+            });
+        }
+    }
+    return issues;
+}
+const runtimeErrorsCheck = {
+    id: RUNTIME_ERRORS_CHECK_ID,
+    async run(context) {
+        // Images and late scripts finish after DOMContentLoaded, which is where
+        // the runner stops waiting. A page that never reaches `load` is still
+        // reported with what it produced so far.
+        await context.page
+            .waitForLoadState('load', { timeout: SETTLE_TIMEOUT_MS })
+            .catch(() => undefined);
+        const events = context.runtimeEvents?.() ?? [];
+        return {
+            checkId: RUNTIME_ERRORS_CHECK_ID,
+            // Findings carry the requested URL like every other check, so they
+            // fingerprint against the same page path as the run's baseline.
+            issues: evaluateRuntimeEvents(events, context.url, {
+                finalUrl: context.finalUrl ?? context.url,
+                ignore: context.ignore ?? [],
+                severities: readSeverities(context.config),
+            }),
+        };
+    },
+};
+//# sourceMappingURL=runtime-errors.js.map
 ;// CONCATENATED MODULE: ../core/dist/checks/seo-deep.js
 
 
@@ -207966,7 +209277,7 @@ async function sitemapUrls(startUrl, fetch) {
     return parseSitemapLocations(sitemap.text, ANALYSIS_LIMITS.sitemapUrls)
         .map((url) => normalizeCrawlUrl(url, origin))
         .filter((url) => url !== null && new URL(url).origin === origin)
-        .map(scrubUrl);
+        .map(scrub_scrubUrl);
 }
 async function crawl(startUrl, loadPage, options) {
     const origin = new URL(startUrl).origin;
@@ -208001,7 +209312,7 @@ async function crawl(startUrl, loadPage, options) {
                     noindex: page.signals.noindex,
                     status: page.status,
                     title: page.signals.title,
-                    url: scrubUrl(url),
+                    url: scrub_scrubUrl(url),
                 });
                 // Alternates and canonicals are followed as well as links: checking
                 // that hreflang is reciprocal needs the other side of each pair.
@@ -208056,7 +209367,7 @@ const seoDeepCheck = {
             maxPages,
             pages: result.pages,
             sitemapUrls: sitemap,
-            startUrl: scrubUrl(context.url),
+            startUrl: scrub_scrubUrl(context.url),
             truncated: result.truncated,
         };
         const issues = [];
@@ -208065,6 +209376,7 @@ const seoDeepCheck = {
 };
 //# sourceMappingURL=seo-deep.js.map
 ;// CONCATENATED MODULE: ../core/dist/bundles.js
+
 
 
 
@@ -208120,13 +209432,19 @@ const FULL_BUNDLE = {
         { checkId: BROKEN_LINKS_CHECK_ID },
     ],
 };
+// `full` plus runtime errors, in the same single page load. Runtime errors run
+// last, so events that arrive while the other checks work are still counted.
+const FULL_RUNTIME_BUNDLE = {
+    id: 'full-runtime',
+    checks: [...FULL_BUNDLE.checks, { checkId: RUNTIME_ERRORS_CHECK_ID }],
+};
 // Lighthouse's default mobile profile, the one PageSpeed Insights reports, so a
 // score here reads the same as the number teams already know.
 const PERF_BUNDLE = {
     id: 'perf',
     checks: [
         {
-            checkId: PERFORMANCE_CHECK_ID,
+            checkId: performance_PERFORMANCE_CHECK_ID,
             config: { runs: DEFAULT_PERFORMANCE_RUNS, formFactor: 'mobile' },
         },
     ],
@@ -208143,7 +209461,7 @@ const SEO_DEEP_BUNDLE = {
     id: 'seo-deep',
     checks: [{ checkId: SEO_DEEP_CHECK_ID }],
 };
-const BUILT_IN_CHECKS = new Map([
+const bundles_BUILT_IN_CHECKS = new Map([
     [a11yCheck.id, a11yCheck],
     [seoCheck.id, seoCheck],
     [securityHeadersCheck.id, securityHeadersCheck],
@@ -208152,6 +209470,7 @@ const BUILT_IN_CHECKS = new Map([
     [secretsExposureCheck.id, secretsExposureCheck],
     [geoCheck.id, geoCheck],
     [seoDeepCheck.id, seoDeepCheck],
+    [runtimeErrorsCheck.id, runtimeErrorsCheck],
 ]);
 const BUILT_IN_BUNDLES = new Map([
     [A11Y_BUNDLE.id, A11Y_BUNDLE],
@@ -208160,6 +209479,7 @@ const BUILT_IN_BUNDLES = new Map([
     [SECURITY_BUNDLE.id, SECURITY_BUNDLE],
     [LINKS_BUNDLE.id, LINKS_BUNDLE],
     [FULL_BUNDLE.id, FULL_BUNDLE],
+    [FULL_RUNTIME_BUNDLE.id, FULL_RUNTIME_BUNDLE],
     [PERF_BUNDLE.id, PERF_BUNDLE],
     [SECRETS_EXPOSURE_BUNDLE.id, SECRETS_EXPOSURE_BUNDLE],
     [GEO_BUNDLE.id, GEO_BUNDLE],
@@ -208413,12 +209733,26 @@ async function startGuardedProxy(options) {
 //# sourceMappingURL=guarded-proxy.js.map
 ;// CONCATENATED MODULE: ../core/dist/report.js
 
-function createScanReport(url, bundleId, results, collected) {
+function createScanReport(url, bundleId, results, collected, page, details) {
     return {
-        url: scrubUrl(url),
+        url: scrub_scrubUrl(url),
         bundleId,
-        results: results.map(scrubCheckResult),
+        results: results.map(scrub_scrubCheckResult),
         ...(collected === undefined ? {} : { collected }),
+        ...(details === undefined ? {} : { details }),
+        ...(page === undefined
+            ? {}
+            : {
+                page: {
+                    ...page,
+                    requestedUrl: scrub_scrubUrl(page.requestedUrl),
+                    finalUrl: scrub_scrubUrl(page.finalUrl),
+                    redirects: page.redirects.map((hop) => ({
+                        ...hop,
+                        url: scrub_scrubUrl(hop.url),
+                    })),
+                },
+            }),
     };
 }
 //# sourceMappingURL=report.js.map
@@ -208627,10 +209961,66 @@ async function collectAiSignals(page, limits) {
 
 
 
+
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 // Playwright's own redirect limit for API requests.
 const MAX_REDIRECTS = 20;
+/** Bounds memory on a page that logs in a loop. */
+const MAX_RUNTIME_EVENTS = 2_000;
+const RUNTIME_RESOURCE_TYPES = new Set([
+    'script',
+    'stylesheet',
+    'image',
+    'font',
+]);
+/** The hops that led to the final response, oldest first. */
+async function redirectChain(response) {
+    const hops = [];
+    let request = response.request().redirectedFrom();
+    while (request !== null && hops.length < MAX_REDIRECTS) {
+        const hop = await request.response().catch(() => null);
+        hops.unshift({ url: request.url(), status: hop?.status() ?? null });
+        request = request.redirectedFrom();
+    }
+    return hops;
+}
+function collectRuntimeEvents(page) {
+    const events = [];
+    const push = (event) => {
+        if (events.length < MAX_RUNTIME_EVENTS)
+            events.push(event);
+    };
+    page.on('pageerror', (error) => push({ kind: 'exception', message: error.message || String(error) }));
+    page.on('console', (message) => {
+        if (message.type() === 'error')
+            push({ kind: 'console-error', message: message.text() });
+    });
+    page.on('requestfailed', (request) => {
+        if (!RUNTIME_RESOURCE_TYPES.has(request.resourceType()))
+            return;
+        push({
+            kind: 'failed-request',
+            url: request.url(),
+            resourceType: request.resourceType(),
+            errorText: request.failure()?.errorText ?? 'a network error',
+        });
+    });
+    page.on('response', (response) => {
+        const request = response.request();
+        if (!RUNTIME_RESOURCE_TYPES.has(request.resourceType()))
+            return;
+        if (response.status() < 400)
+            return;
+        push({
+            kind: 'failed-request',
+            url: response.url(),
+            resourceType: request.resourceType(),
+            status: response.status(),
+        });
+    });
+    return { events, reset: () => events.splice(0) };
+}
 function resolveChecks(bundle, registry) {
     const seen = new Set();
     return bundle.checks.map(({ checkId }) => {
@@ -208677,9 +210067,12 @@ function runner_isSameOrigin(url, origin) {
         return false;
     }
 }
-async function navigateWithRetry(page, url, timeout, guardFailure) {
+async function navigateWithRetry(page, url, timeout, guardFailure, beforeAttempt = () => undefined) {
     let firstError;
     for (let attempt = 0; attempt < 2; attempt += 1) {
+        // A retried load starts over, so the first attempt's errors are not
+        // reported twice.
+        beforeAttempt();
         try {
             const response = await page.goto(url, {
                 timeout,
@@ -208689,7 +210082,10 @@ async function navigateWithRetry(page, url, timeout, guardFailure) {
             // a browser actually applies. `null` only happens when the navigation
             // produced no response at all; a check decides what to do about that
             // rather than reading an empty header set as "nothing is configured".
-            return response === null ? null : response.headers();
+            return {
+                headers: response === null ? null : response.headers(),
+                response,
+            };
         }
         catch (error) {
             const failure = guardFailure();
@@ -208867,15 +210263,30 @@ async function runScan(request, options = {}) {
             });
         }
         const page = await browserContext.newPage();
-        const responseHeaders = await navigateWithRetry(page, request.url, options.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS, guardFailure);
+        const runtime = collectRuntimeEvents(page);
+        const navigation = await navigateWithRetry(page, request.url, options.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS, guardFailure, runtime.reset);
+        const responseHeaders = navigation.headers;
         const navigationGuardFailure = guardFailure();
         if (navigationGuardFailure.failed)
             throw navigationGuardFailure.error;
         const validateFinalUrl = options.finalUrlGuard ?? (async () => undefined);
         await validateFinalUrl(page.url());
         const html = await page.content();
+        const finalUrl = page.url();
+        const csp = responseHeaders?.['content-security-policy'];
+        const pageLoad = {
+            requestedUrl: request.url,
+            finalUrl,
+            redirects: navigation.response === null
+                ? []
+                : await redirectChain(navigation.response),
+            status: navigation.response?.status() ?? null,
+            securityHeaders: responseHeaders === null ? [] : presentSecurityHeaders(responseHeaders),
+            scriptPolicy: csp === undefined ? [] : describeScriptPolicy(csp),
+        };
         const results = [];
         const collected = {};
+        const details = {};
         for (const [index, check] of resolvedChecks.entries()) {
             const bundleCheck = request.bundle.checks[index];
             if (bundleCheck === undefined) {
@@ -208889,6 +210300,12 @@ async function runScan(request, options = {}) {
                 config: bundleCheck.config ?? {},
                 debuggingPort,
                 validateFinalUrl,
+                finalUrl,
+                runtimeEvents: () => [...runtime.events],
+                ignore: request.ignore ?? [],
+                ...(request.performance === undefined
+                    ? {}
+                    : { performance: request.performance }),
                 ...(guardedFetch ? { guardedFetch } : {}),
                 ...(authentication ? { authenticated: true } : {}),
             };
@@ -208913,6 +210330,11 @@ async function runScan(request, options = {}) {
                 collected[check.id] = signals;
                 results.push(result);
             }
+            else if ('details' in output) {
+                const { details: facts, ...result } = output;
+                details[check.id] = facts;
+                results.push(result);
+            }
             else {
                 results.push(output);
             }
@@ -208929,7 +210351,7 @@ async function runScan(request, options = {}) {
         return {
             ...createScanReport(request.url, request.bundle.id, results, Object.keys(collected).length === 0
                 ? undefined
-                : collected),
+                : collected, pageLoad, Object.keys(details).length === 0 ? undefined : details),
             ...(aiPage === undefined ? {} : { aiPage }),
         };
     }
@@ -208955,6 +210377,9 @@ async function runScan(request, options = {}) {
 }
 //# sourceMappingURL=runner.js.map
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
+
+
 
 
 
@@ -209000,6 +210425,9 @@ function buildAuthorizeRequest(inputs, context, versions, oidcToken, options) {
             failOn: inputs.failOn,
         },
         url: inputs.url,
+        ...(inputs.baselineBranch === undefined
+            ? {}
+            : { baselineBranch: inputs.baselineBranch }),
         // Omitted entirely when unavailable, so a backend that does not know the
         // field still accepts the request.
         ...(oidcToken === undefined ? {} : { oidcToken }),
@@ -209142,7 +210570,7 @@ class ResultUploadError extends Error {
         this.name = 'ResultUploadError';
     }
 }
-async function postResult(path, payload, uploadToken, options) {
+async function postResult(path, payload, uploadToken, options, accept) {
     const fetcher = options.fetcher ?? fetch;
     const apiBaseUrl = (options.apiBaseUrl ??
         process.env.QUALITYGATE_API_URL ??
@@ -209154,6 +210582,7 @@ async function postResult(path, payload, uploadToken, options) {
             headers: {
                 authorization: `Bearer ${uploadToken}`,
                 'content-type': 'application/json',
+                ...(accept ? { accept } : {}),
             },
             method: 'POST',
         });
@@ -209175,7 +210604,7 @@ async function uploadReport(credentials, results, options = {}, collected) {
         results,
         ...(collected === undefined ? {} : { collected }),
     });
-    const response = await postResult(`/v1/runs/${credentials.runId}/report`, request, credentials.uploadToken, options);
+    const response = await postResult(`/v1/runs/${credentials.runId}/report`, request, credentials.uploadToken, options, CI_REPORT_WITH_COMPARISON);
     const parsed = ReportResponseSchema.safeParse(response.payload);
     if (!parsed.success) {
         throw new ResultUploadError(`QualityGate report returned HTTP ${response.status} with an invalid response.`, { cause: parsed.error });
@@ -209188,6 +210617,42 @@ async function uploadFailure(credentials, errorKind, options = {}) {
     const parsed = FailResponseSchema.safeParse(response.payload);
     if (!parsed.success) {
         throw new ResultUploadError(`QualityGate failure report returned HTTP ${response.status} with an invalid response.`, { cause: parsed.error });
+    }
+    return parsed.data;
+}
+/**
+ * The server's verdict over several reported runs, with the limits applied to
+ * their summed findings. Each run is named with the upload token it reported
+ * with, which proves this job owns it.
+ */
+async function requestCombinedVerdict(runs, options = {}) {
+    const request = CombinedVerdictRequestSchema.parse({ runs });
+    const fetcher = options.fetcher ?? fetch;
+    const apiBaseUrl = (options.apiBaseUrl ??
+        process.env.QUALITYGATE_API_URL ??
+        'https://api.qualitygate.dev').replace(/\/$/, '');
+    let response;
+    try {
+        response = await fetcher(`${apiBaseUrl}/v1/runs/combined-verdict`, {
+            body: JSON.stringify(request),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+        });
+    }
+    catch (error) {
+        throw new ResultUploadError('Could not reach the QualityGate result service.', { cause: error });
+    }
+    let payload;
+    try {
+        payload = await response.json();
+    }
+    catch (error) {
+        throw new ResultUploadError(`QualityGate combined verdict returned HTTP ${response.status} with an invalid response.`, { cause: error });
+    }
+    const parsed = CombinedVerdictResponseSchema.safeParse(payload);
+    if (!parsed.success) {
+        // Fail closed: without the server's combined verdict there is no verdict.
+        throw new ResultUploadError(`QualityGate combined verdict returned HTTP ${response.status} with an invalid response.`, { cause: parsed.error });
     }
     return parsed.data;
 }
@@ -209263,8 +210728,14 @@ async function executePreparedRun(prepared, options = {}) {
     try {
         report = await (options.runScan ?? runScan)({
             bundle,
-            checks: options.checks ?? BUILT_IN_CHECKS,
+            checks: options.checks ?? bundles_BUILT_IN_CHECKS,
             url: prepared.inputs.url,
+            ...(prepared.inputs.performance === undefined
+                ? {}
+                : { performance: prepared.inputs.performance }),
+            ...(prepared.inputs.ignore === undefined
+                ? {}
+                : { ignore: prepared.inputs.ignore }),
             ...(prepared.inputs.previewAuthentication === undefined
                 ? {}
                 : { authentication: prepared.inputs.previewAuthentication }),
@@ -209366,6 +210837,7 @@ function preview_authentication_parsePreviewAuthentication(values, names, create
 ;// CONCATENATED MODULE: ../runner/dist/inputs.js
 
 
+
 function readInput(environment, createError, name, fallback) {
     const value = environment[name]?.trim() || fallback;
     if (value === undefined) {
@@ -209422,18 +210894,182 @@ function readCiInputs(environment, createError) {
         password: 'QUALITYGATE_PREVIEW_PASSWORD',
         username: 'QUALITYGATE_PREVIEW_USERNAME',
     }, createError);
+    const optional = readOptionalScanInputs({
+        baselineBranch: environment.QUALITYGATE_BASELINE_BRANCH,
+        budgets: environment.QUALITYGATE_BUDGETS,
+        failOnNew: environment.QUALITYGATE_FAIL_ON_NEW,
+        ignore: environment.QUALITYGATE_IGNORE,
+        perfFormFactor: environment.QUALITYGATE_PERF_FORM_FACTOR,
+    }, CI_OPTIONAL_INPUT_NAMES, createError, bundle.data, failOn);
     return {
         apiKey: read('QUALITYGATE_API_KEY'),
         bundle: bundle.data,
-        failOn,
+        ...optional,
         ...(previewAuthentication === undefined ? {} : { previewAuthentication }),
         url,
         waitForUrl: parseCiBoolean(createError, 'QUALITYGATE_WAIT_FOR_URL', read('QUALITYGATE_WAIT_FOR_URL', 'true')),
         waitTimeoutMs: waitTimeoutSeconds * 1_000,
     };
 }
+const MAX_SCAN_URLS = 20;
+/**
+ * QUALITYGATE_URLS: one entry per line, or comma separated. Paths resolve
+ * against the base URL, so `/checkout` scans the checkout of the same preview.
+ * Duplicates are scanned once. Returns `undefined` when the input is unset, so
+ * a single-URL run is unchanged.
+ */
+function readScanUrls(environment, baseUrl, createError) {
+    const name = 'QUALITYGATE_URLS';
+    const raw = environment[name];
+    if (raw === undefined || raw.trim() === '')
+        return undefined;
+    const urls = [];
+    for (const entry of raw.split(/[\r\n,]+/)) {
+        const value = entry.trim();
+        if (value === '' || value.startsWith('#'))
+            continue;
+        let url;
+        try {
+            url = new URL(value, baseUrl);
+        }
+        catch {
+            throw createError(name, 'must list paths or HTTP or HTTPS URLs.');
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            throw createError(name, 'must list paths or HTTP or HTTPS URLs.');
+        }
+        if (url.username || url.password) {
+            throw createError(name, 'must not contain credentials. Use QUALITYGATE_PREVIEW_USERNAME and QUALITYGATE_PREVIEW_PASSWORD.');
+        }
+        const resolved = url.toString();
+        if (!urls.includes(resolved))
+            urls.push(resolved);
+    }
+    if (urls.length === 0)
+        throw createError(name, 'lists no URLs.');
+    if (urls.length > MAX_SCAN_URLS) {
+        throw createError(name, `lists more than ${MAX_SCAN_URLS} URLs.`);
+    }
+    return urls;
+}
+const FORM_FACTORS = {
+    mobile: ['mobile'],
+    desktop: ['desktop'],
+    both: ['mobile', 'desktop'],
+};
+const CI_OPTIONAL_INPUT_NAMES = {
+    baselineBranch: 'QUALITYGATE_BASELINE_BRANCH',
+    budgets: 'QUALITYGATE_BUDGETS',
+    failOnNew: 'QUALITYGATE_FAIL_ON_NEW',
+    ignore: 'QUALITYGATE_IGNORE',
+    perfFormFactor: 'QUALITYGATE_PERF_FORM_FACTOR',
+};
+/**
+ * The opt-in inputs every adapter shares, read from whatever names that
+ * adapter uses (`QUALITYGATE_BUDGETS` in a pipeline, `budgets` in the
+ * Action), so each one is validated the same way everywhere. Unset inputs
+ * leave the result exactly as it was without them.
+ */
+function readOptionalScanInputs(values, names, createError, bundle, failOn) {
+    // Fail on new findings is regression mode under a name teams look for: the
+    // same limits, counted against new findings only.
+    const failOnNew = parseCiBoolean(createError, names.failOnNew, values.failOnNew?.trim() || 'false');
+    const baselineValue = values.baselineBranch?.trim();
+    let baselineBranch;
+    if (baselineValue) {
+        const parsed = BranchNameSchema.safeParse(baselineValue);
+        if (!parsed.success) {
+            throw createError(names.baselineBranch, 'must be a Git branch name.');
+        }
+        baselineBranch = parsed.data;
+    }
+    let ignore;
+    try {
+        ignore = parseIgnorePatterns(values.ignore);
+    }
+    catch (error) {
+        if (!(error instanceof IgnorePatternError))
+            throw error;
+        throw createError(names.ignore, `is invalid. ${error.message}`);
+    }
+    const performance = readPerformanceOptions(values, names, createError, bundle);
+    return {
+        failOn: failOnNew ? { ...failOn, mode: 'regression' } : failOn,
+        ...(baselineBranch === undefined ? {} : { baselineBranch }),
+        ...(ignore.length === 0 ? {} : { ignore }),
+        ...(performance === undefined ? {} : { performance }),
+    };
+}
+/**
+ * Budgets and presets for the `perf` bundle. Both are refused with any other
+ * bundle rather than ignored, because a budget that silently never runs reads
+ * as a budget that passed.
+ */
+function readPerformanceOptions(values, names, createError, bundle) {
+    let budgets;
+    try {
+        budgets = parsePerformanceBudgets(values.budgets);
+    }
+    catch (error) {
+        if (!(error instanceof PerformanceBudgetError))
+            throw error;
+        throw createError(names.budgets, `is invalid. ${error.message}`);
+    }
+    const formFactorValue = values.perfFormFactor?.trim().toLowerCase();
+    const formFactors = formFactorValue === undefined || formFactorValue === ''
+        ? undefined
+        : FORM_FACTORS[formFactorValue];
+    if (formFactorValue && formFactors === undefined) {
+        throw createError(names.perfFormFactor, "must be 'mobile', 'desktop' or 'both'.");
+    }
+    if (budgets === undefined && formFactors === undefined)
+        return undefined;
+    if (bundle !== 'perf') {
+        throw createError(budgets === undefined ? names.perfFormFactor : names.budgets, 'only applies to the perf bundle.');
+    }
+    return {
+        ...(budgets === undefined ? {} : { budgets }),
+        ...(formFactors === undefined ? {} : { formFactors }),
+    };
+}
 //# sourceMappingURL=inputs.js.map
+// EXTERNAL MODULE: external "node:path"
+var external_node_path_ = __nccwpck_require__(760);
+// EXTERNAL MODULE: external "node:url"
+var external_node_url_ = __nccwpck_require__(136);
+;// CONCATENATED MODULE: ../runner/dist/lighthouse.js
+
+
+
+// Imported by file URL and hidden from the bundler. A bundled `import()` of the
+// package is rewritten into CommonJS interop, which hides Lighthouse's default
+// export behind a namespace and leaves `perf` unable to run.
+const importModule = (href) => import(/* webpackIgnore: true */ href);
+/**
+ * Lighthouse installed next to the running bundle, as the Bitbucket and
+ * GitLab images do at build time from the lockfile the GitHub Action pins.
+ */
+async function loadBundledLighthouse(options = {}) {
+    const directory = options.directory ?? dirname(process.argv[1] ?? process.cwd());
+    const packageDirectory = join(directory, 'node_modules', 'lighthouse');
+    const load = options.importModule ?? importModule;
+    const [lighthouse, medianRun] = await Promise.all([
+        load(pathToFileURL(join(packageDirectory, 'core', 'index.js')).href),
+        load(pathToFileURL(join(packageDirectory, 'core', 'lib', 'median-run.js'))
+            .href),
+    ]);
+    return createLighthouseEngine({
+        lighthouse: lighthouse,
+        medianRun: medianRun,
+    });
+}
+/** The built-in checks, with `perf` reading the image's Lighthouse. */
+function imageChecks(loadLighthouse = () => loadBundledLighthouse()) {
+    return new Map(BUILT_IN_CHECKS).set(PERFORMANCE_CHECK_ID, createPerformanceCheck({ loadLighthouse }));
+}
+//# sourceMappingURL=lighthouse.js.map
 ;// CONCATENATED MODULE: ../runner/dist/index.js
+
 
 
 
@@ -209528,14 +211164,29 @@ function readActionInputs(environment = process.env) {
         password: 'preview_password',
         username: 'preview_username',
     }, (name, message) => new Error(`Action input '${name}' ${message}`));
+    const actionError = (name, message) => new Error(`Action input '${name}' ${message}`);
+    const bundle = contract_BundleIdSchema.parse(inputs_readInput(environment, 'bundle', 'a11y'));
+    const optional = readOptionalScanInputs({
+        baselineBranch: environment.INPUT_BASELINE_BRANCH,
+        budgets: environment.INPUT_BUDGETS,
+        failOnNew: environment.INPUT_FAIL_ON_NEW,
+        ignore: environment.INPUT_IGNORE,
+        perfFormFactor: environment.INPUT_PERF_FORM_FACTOR,
+    }, {
+        baselineBranch: 'baseline_branch',
+        budgets: 'budgets',
+        failOnNew: 'fail_on_new',
+        ignore: 'ignore',
+        perfFormFactor: 'perf_form_factor',
+    }, actionError, bundle, fail_on_parseFailOn(inputs_readInput(environment, 'fail_on', 'critical=0,serious=0'), "Action input 'fail_on'"));
     return {
         ...(apiKey ? { apiKey } : {}),
         ...(parseBoolean(inputs_readInput(environment, 'repository_security', 'false'), 'repository_security')
             ? { repositorySecurity: true }
             : {}),
-        bundle: contract_BundleIdSchema.parse(inputs_readInput(environment, 'bundle', 'a11y')),
+        bundle,
         comment: parseBoolean(inputs_readInput(environment, 'comment', 'true'), 'comment'),
-        failOn: fail_on_parseFailOn(inputs_readInput(environment, 'fail_on', 'critical=0,serious=0'), "Action input 'fail_on'"),
+        ...optional,
         ...(previewAuthentication === undefined ? {} : { previewAuthentication }),
         url,
         waitForUrl: parseBoolean(inputs_readInput(environment, 'wait_for_url', 'true'), 'wait_for_url'),
@@ -209646,10 +211297,6 @@ var external_node_child_process_ = __nccwpck_require__(421);
 const promises_namespaceObject = require("node:fs/promises");
 ;// CONCATENATED MODULE: external "node:os"
 const external_node_os_namespaceObject = require("node:os");
-// EXTERNAL MODULE: external "node:path"
-var external_node_path_ = __nccwpck_require__(760);
-// EXTERNAL MODULE: external "node:url"
-var external_node_url_ = __nccwpck_require__(136);
 ;// CONCATENATED MODULE: ./src/lighthouse-runtime/package-lock.json
 const package_lock_namespaceObject = /*#__PURE__*/JSON.parse('{"name":"qualitygate-lighthouse-runtime","version":"0.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"qualitygate-lighthouse-runtime","version":"0.0.0","dependencies":{"lighthouse":"13.5.0"}},"node_modules/@formatjs/ecma402-abstract":{"version":"2.3.6","resolved":"https://registry.npmjs.org/@formatjs/ecma402-abstract/-/ecma402-abstract-2.3.6.tgz","integrity":"sha512-HJnTFeRM2kVFVr5gr5kH1XP6K0JcJtE7Lzvtr3FS/so5f1kpsqqqxy5JF+FRaO6H2qmcMfAUIox7AJteieRtVw==","license":"MIT","dependencies":{"@formatjs/fast-memoize":"2.2.7","@formatjs/intl-localematcher":"0.6.2","decimal.js":"^10.4.3","tslib":"^2.8.0"}},"node_modules/@formatjs/fast-memoize":{"version":"2.2.7","resolved":"https://registry.npmjs.org/@formatjs/fast-memoize/-/fast-memoize-2.2.7.tgz","integrity":"sha512-Yabmi9nSvyOMrlSeGGWDiH7rf3a7sIwplbvo/dlz9WCIjzIQAfy1RMf4S0X3yG724n5Ghu2GmEl5NJIV6O9sZQ==","license":"MIT","dependencies":{"tslib":"^2.8.0"}},"node_modules/@formatjs/icu-messageformat-parser":{"version":"2.11.4","resolved":"https://registry.npmjs.org/@formatjs/icu-messageformat-parser/-/icu-messageformat-parser-2.11.4.tgz","integrity":"sha512-7kR78cRrPNB4fjGFZg3Rmj5aah8rQj9KPzuLsmcSn4ipLXQvC04keycTI1F7kJYDwIXtT2+7IDEto842CfZBtw==","license":"MIT","dependencies":{"@formatjs/ecma402-abstract":"2.3.6","@formatjs/icu-skeleton-parser":"1.8.16","tslib":"^2.8.0"}},"node_modules/@formatjs/icu-skeleton-parser":{"version":"1.8.16","resolved":"https://registry.npmjs.org/@formatjs/icu-skeleton-parser/-/icu-skeleton-parser-1.8.16.tgz","integrity":"sha512-H13E9Xl+PxBd8D5/6TVUluSpxGNvFSlN/b3coUp0e0JpuWXXnQDiavIpY3NnvSp4xhEMoXyyBvVfdFX8jglOHQ==","license":"MIT","dependencies":{"@formatjs/ecma402-abstract":"2.3.6","tslib":"^2.8.0"}},"node_modules/@formatjs/intl-localematcher":{"version":"0.6.2","resolved":"https://registry.npmjs.org/@formatjs/intl-localematcher/-/intl-localematcher-0.6.2.tgz","integrity":"sha512-XOMO2Hupl0wdd172Y06h6kLpBz6Dv+J4okPLl4LPtzbr8f66WbIoy4ev98EBuZ6ZK4h5ydTN6XneT4QVpD7cdA==","license":"MIT","dependencies":{"tslib":"^2.8.0"}},"node_modules/@opentelemetry/api":{"version":"1.9.1","resolved":"https://registry.npmjs.org/@opentelemetry/api/-/api-1.9.1.tgz","integrity":"sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==","license":"Apache-2.0","engines":{"node":">=8.0.0"}},"node_modules/@opentelemetry/api-logs":{"version":"0.220.0","resolved":"https://registry.npmjs.org/@opentelemetry/api-logs/-/api-logs-0.220.0.tgz","integrity":"sha512-CmVa4ImJ+ynfrPMNaAXHET6Bhb44SwzmfyVJFq9ni2jgXJR/l7C6gfVFddNmHP+ZOkP9cf4f9DBe68qVLTHc9w==","license":"Apache-2.0","dependencies":{"@opentelemetry/api":"^1.3.0"},"engines":{"node":">=8.0.0"}},"node_modules/@opentelemetry/core":{"version":"2.11.0","resolved":"https://registry.npmjs.org/@opentelemetry/core/-/core-2.11.0.tgz","integrity":"sha512-7YP44XH0tV6+Mb54x2YGf84i7yi+31MBZlE8JwvozkxyTvXbSp10X7cI7YE49ChJ3shMJoBmCJF3+1QFBJctGA==","license":"Apache-2.0","dependencies":{"@opentelemetry/semantic-conventions":"^1.29.0"},"engines":{"node":"^18.19.0 || >=20.6.0"},"peerDependencies":{"@opentelemetry/api":">=1.0.0 <1.10.0"}},"node_modules/@opentelemetry/instrumentation":{"version":"0.220.0","resolved":"https://registry.npmjs.org/@opentelemetry/instrumentation/-/instrumentation-0.220.0.tgz","integrity":"sha512-xQx3E2WxP1mDvKzxLxX+CTCtNLa560YJZ3087qYHerl2YmiKpv7AH+dAy7vmx+eVrZ5BwhfWUAVoKOoxCNHcpw==","license":"Apache-2.0","dependencies":{"@opentelemetry/api-logs":"0.220.0","import-in-the-middle":"^3.0.0","require-in-the-middle":"^8.0.0"},"engines":{"node":"^18.19.0 || >=20.6.0"},"peerDependencies":{"@opentelemetry/api":"^1.3.0"}},"node_modules/@opentelemetry/resources":{"version":"2.11.0","resolved":"https://registry.npmjs.org/@opentelemetry/resources/-/resources-2.11.0.tgz","integrity":"sha512-Ie7+8q8MDF4FAEQCKVMTx3ReUvxiIAgIiiW3c9JdmP8+HMcDy20puT+AHjexnExgnbvBxjQ9fjkFDWrikJ2jQA==","license":"Apache-2.0","dependencies":{"@opentelemetry/core":"2.11.0","@opentelemetry/semantic-conventions":"^1.29.0"},"engines":{"node":"^18.19.0 || >=20.6.0"},"peerDependencies":{"@opentelemetry/api":">=1.3.0 <1.10.0"}},"node_modules/@opentelemetry/sdk-trace":{"version":"2.11.0","resolved":"https://registry.npmjs.org/@opentelemetry/sdk-trace/-/sdk-trace-2.11.0.tgz","integrity":"sha512-fFnTqGm8/G73GQVnxYi7LXa1ZVYEUvgL6XI1LpvV0bPC7WQ/ZGgKxCSl8FnlZBKto9JHHEFTO6s6CUpvvtwFrA==","license":"Apache-2.0","dependencies":{"@opentelemetry/core":"2.11.0","@opentelemetry/resources":"2.11.0","@opentelemetry/semantic-conventions":"^1.29.0"},"engines":{"node":"^18.19.0 || >=20.6.0"},"peerDependencies":{"@opentelemetry/api":">=1.3.0 <1.10.0"}},"node_modules/@opentelemetry/sdk-trace-base":{"version":"2.11.0","resolved":"https://registry.npmjs.org/@opentelemetry/sdk-trace-base/-/sdk-trace-base-2.11.0.tgz","integrity":"sha512-H19x/TX/LZdqiYOjM7fqtSxwlplC5pgelavqbQdHbhdq0q/AI/TGkM2dfGuuynTXmJPeF2HoZVoPDu+TGoW78A==","license":"Apache-2.0","dependencies":{"@opentelemetry/core":"2.11.0","@opentelemetry/resources":"2.11.0","@opentelemetry/sdk-trace":"2.11.0","@opentelemetry/semantic-conventions":"^1.29.0"},"engines":{"node":"^18.19.0 || >=20.6.0"},"peerDependencies":{"@opentelemetry/api":">=1.3.0 <1.10.0"}},"node_modules/@opentelemetry/semantic-conventions":{"version":"1.43.0","resolved":"https://registry.npmjs.org/@opentelemetry/semantic-conventions/-/semantic-conventions-1.43.0.tgz","integrity":"sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg==","license":"Apache-2.0","engines":{"node":">=14"}},"node_modules/@paulirish/trace_engine":{"version":"0.0.65","resolved":"https://registry.npmjs.org/@paulirish/trace_engine/-/trace_engine-0.0.65.tgz","integrity":"sha512-Qsm6F5C8xf6ZzQXbQc2+wcpe6sggfs/gvc/ytqSurdvYg3kyW0ECHCqE0CWBKZpqgjVfPNX9c7SCS3r2nEIRGg==","license":"BSD-3-Clause","dependencies":{"legacy-javascript":"latest","third-party-web":"latest"}},"node_modules/@puppeteer/browsers":{"version":"3.2.2","resolved":"https://registry.npmjs.org/@puppeteer/browsers/-/browsers-3.2.2.tgz","integrity":"sha512-q2BU4YfO9h/Wt7IcWPcggpOOqLk2Tbs1hDwolvKZrweRjy751OJBKMN9zO5bfD0pzU7X/tvKw/exQds4pM/LOg==","license":"Apache-2.0","dependencies":{"modern-tar":"^0.8.4","yargs":"^18.0.0"},"bin":{"browsers":"lib/main-cli.js"},"engines":{"node":">=22.12.0"},"peerDependencies":{"proxy-agent":">=8.0.1","yauzl":"^2.10.0 || ^3.4.0"},"peerDependenciesMeta":{"proxy-agent":{"optional":true},"yauzl":{"optional":true}}},"node_modules/@puppeteer/browsers/node_modules/ansi-regex":{"version":"6.3.0","resolved":"https://registry.npmjs.org/ansi-regex/-/ansi-regex-6.3.0.tgz","integrity":"sha512-WpDfL7NO6j7tH88IDBNVdUJxDh9nmCteAVW9dsep846XdwF4naCBK+/tGLX3KJgcpgMRXCFlTM2hKGoK9FsdrQ==","license":"MIT","engines":{"node":">=12"},"funding":{"url":"https://github.com/chalk/ansi-regex?sponsor=1"}},"node_modules/@puppeteer/browsers/node_modules/ansi-styles":{"version":"6.2.3","resolved":"https://registry.npmjs.org/ansi-styles/-/ansi-styles-6.2.3.tgz","integrity":"sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg==","license":"MIT","engines":{"node":">=12"},"funding":{"url":"https://github.com/chalk/ansi-styles?sponsor=1"}},"node_modules/@puppeteer/browsers/node_modules/cliui":{"version":"9.0.1","resolved":"https://registry.npmjs.org/cliui/-/cliui-9.0.1.tgz","integrity":"sha512-k7ndgKhwoQveBL+/1tqGJYNz097I7WOvwbmmU2AR5+magtbjPWQTS1C5vzGkBC8Ym8UWRzfKUzUUqFLypY4Q+w==","license":"ISC","dependencies":{"string-width":"^7.2.0","strip-ansi":"^7.1.0","wrap-ansi":"^9.0.0"},"engines":{"node":">=20"}},"node_modules/@puppeteer/browsers/node_modules/cliui/node_modules/string-width":{"version":"7.2.0","resolved":"https://registry.npmjs.org/string-width/-/string-width-7.2.0.tgz","integrity":"sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ==","license":"MIT","dependencies":{"emoji-regex":"^10.3.0","get-east-asian-width":"^1.0.0","strip-ansi":"^7.1.0"},"engines":{"node":">=18"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/@puppeteer/browsers/node_modules/emoji-regex":{"version":"10.6.0","resolved":"https://registry.npmjs.org/emoji-regex/-/emoji-regex-10.6.0.tgz","integrity":"sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==","license":"MIT"},"node_modules/@puppeteer/browsers/node_modules/string-width":{"version":"8.2.2","resolved":"https://registry.npmjs.org/string-width/-/string-width-8.2.2.tgz","integrity":"sha512-GaPUh5gfdrYzqeVNZvUfT23vYYxXzKYidUcnMtJg/3rxRV63EFZy3k6xfKlmfeJD0176lnUV/Usr3XcwSvFzpg==","license":"MIT","dependencies":{"get-east-asian-width":"^1.5.0","strip-ansi":"^7.1.2"},"engines":{"node":">=20"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/@puppeteer/browsers/node_modules/strip-ansi":{"version":"7.2.0","resolved":"https://registry.npmjs.org/strip-ansi/-/strip-ansi-7.2.0.tgz","integrity":"sha512-yDPMNjp4WyfYBkHnjIRLfca1i6KMyGCtsVgoKe/z1+6vukgaENdgGBZt+ZmKPc4gavvEZ5OgHfHdrazhgNyG7w==","license":"MIT","dependencies":{"ansi-regex":"^6.2.2"},"engines":{"node":">=12"},"funding":{"url":"https://github.com/chalk/strip-ansi?sponsor=1"}},"node_modules/@puppeteer/browsers/node_modules/wrap-ansi":{"version":"9.0.2","resolved":"https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-9.0.2.tgz","integrity":"sha512-42AtmgqjV+X1VpdOfyTGOYRi0/zsoLqtXQckTmqTeybT+BDIbM/Guxo7x3pE2vtpr1ok6xRqM9OpBe+Jyoqyww==","license":"MIT","dependencies":{"ansi-styles":"^6.2.1","string-width":"^7.0.0","strip-ansi":"^7.1.0"},"engines":{"node":">=18"},"funding":{"url":"https://github.com/chalk/wrap-ansi?sponsor=1"}},"node_modules/@puppeteer/browsers/node_modules/wrap-ansi/node_modules/string-width":{"version":"7.2.0","resolved":"https://registry.npmjs.org/string-width/-/string-width-7.2.0.tgz","integrity":"sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ==","license":"MIT","dependencies":{"emoji-regex":"^10.3.0","get-east-asian-width":"^1.0.0","strip-ansi":"^7.1.0"},"engines":{"node":">=18"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/@puppeteer/browsers/node_modules/yargs":{"version":"18.2.0","resolved":"https://registry.npmjs.org/yargs/-/yargs-18.2.0.tgz","integrity":"sha512-9OpKOLeaoNFecEp7P6iYbzze/5CqWoH7N3SMs/6y1XF4nMvFMspEGZzJ6uFi9MmQwXhyzqYoSEKO3tvA3Z/o2w==","license":"MIT","dependencies":{"cliui":"^9.0.1","escalade":"^3.1.1","get-caller-file":"^2.0.5","string-width":"^8.2.1","y18n":"^5.0.5","yargs-parser":"^22.0.0"},"engines":{"node":"^20.19.0 || ^22.12.0 || >=23"}},"node_modules/@puppeteer/browsers/node_modules/yargs-parser":{"version":"22.0.0","resolved":"https://registry.npmjs.org/yargs-parser/-/yargs-parser-22.0.0.tgz","integrity":"sha512-rwu/ClNdSMpkSrUb+d6BRsSkLUq1fmfsY6TOpYzTwvwkg1/NRG85KBy3kq++A8LKQwX6lsu+aWad+2khvuXrqw==","license":"ISC","engines":{"node":"^20.19.0 || ^22.12.0 || >=23"}},"node_modules/@sentry/conventions":{"version":"0.16.0","resolved":"https://registry.npmjs.org/@sentry/conventions/-/conventions-0.16.0.tgz","integrity":"sha512-fO9PLmHdVURcSPUpWCItWAtgKiMwGdJHbovoSEyLplX5sxs2ugvI4CBPTrkkgqhObnZOD0CnWBKDzSVQYBKEyQ==","license":"MIT","engines":{"node":">=14"}},"node_modules/@sentry/core":{"version":"10.75.2","resolved":"https://registry.npmjs.org/@sentry/core/-/core-10.75.2.tgz","integrity":"sha512-KXzNf2c430cJIOMv84+MKpkXgave1DBNMNNwn073olVD773NME5IhDv/9VQyiFM2wIU+6bm4FEBVEVSuzqgjJw==","license":"MIT","dependencies":{"@sentry/conventions":"^0.16.0"},"engines":{"node":">=18"}},"node_modules/@sentry/node":{"version":"10.75.2","resolved":"https://registry.npmjs.org/@sentry/node/-/node-10.75.2.tgz","integrity":"sha512-ffdx1i3Fx9Q3Ofdaone2I+HWOj9+Wcu268xgV+Bn8WJYABm8BZIBNvS+PORKBPesWILhQCThWOs+E/8vcV1HuQ==","license":"MIT","dependencies":{"@opentelemetry/api":"^1.9.1","@opentelemetry/instrumentation":"^0.220.0","@opentelemetry/sdk-trace-base":"^2.9.0","@sentry/conventions":"^0.16.0","@sentry/core":"10.75.2","@sentry/node-core":"10.75.2","@sentry/opentelemetry":"10.75.2","@sentry/server-utils":"10.75.2","import-in-the-middle":"^3.0.0"},"engines":{"node":">=18"}},"node_modules/@sentry/node-core":{"version":"10.75.2","resolved":"https://registry.npmjs.org/@sentry/node-core/-/node-core-10.75.2.tgz","integrity":"sha512-6sFhrvWVLAPRTOYkwrOOLwgsWINe6Y75oX9xKj11zZcKd2e1K2Y3bcx3uzDU06+cxfVbUQUBulsCr/TD7yx/vw==","license":"MIT","dependencies":{"@sentry/conventions":"^0.16.0","@sentry/core":"10.75.2","@sentry/opentelemetry":"10.75.2","import-in-the-middle":"^3.0.0"},"engines":{"node":">=18"},"peerDependencies":{"@opentelemetry/api":"^1.9.0","@opentelemetry/core":"^1.30.1 || ^2.1.0","@opentelemetry/exporter-trace-otlp-http":">=0.57.0 <1","@opentelemetry/instrumentation":">=0.57.1 <1","@opentelemetry/sdk-trace-base":"^1.30.1 || ^2.1.0"},"peerDependenciesMeta":{"@opentelemetry/api":{"optional":true},"@opentelemetry/core":{"optional":true},"@opentelemetry/exporter-trace-otlp-http":{"optional":true},"@opentelemetry/instrumentation":{"optional":true},"@opentelemetry/sdk-trace-base":{"optional":true}}},"node_modules/@sentry/opentelemetry":{"version":"10.75.2","resolved":"https://registry.npmjs.org/@sentry/opentelemetry/-/opentelemetry-10.75.2.tgz","integrity":"sha512-qoJIdrXiFPPYs7AmdkktB5O4vhHYKzk6EulpQlvROe+ZZeG4/S0yeJApAbg3ThDob/2zEAxYEPEvaHv2epipgA==","license":"MIT","dependencies":{"@sentry/conventions":"^0.16.0","@sentry/core":"10.75.2"},"engines":{"node":">=18"},"peerDependencies":{"@opentelemetry/api":"^1.9.0","@opentelemetry/core":"^1.30.1 || ^2.1.0","@opentelemetry/sdk-trace-base":"^1.30.1 || ^2.1.0"}},"node_modules/@sentry/server-utils":{"version":"10.75.2","resolved":"https://registry.npmjs.org/@sentry/server-utils/-/server-utils-10.75.2.tgz","integrity":"sha512-ep8Ntj/vsLHbql1jUMFiRYrleuQ3dENb8oD4Nkjv7hou2j0UKLct1eLbx+TckeVOhYdWmFeO7WJWjRio/a4TOg==","license":"MIT","dependencies":{"@sentry/conventions":"^0.16.0","@sentry/core":"10.75.2"},"engines":{"node":">=18"}},"node_modules/@types/node":{"version":"26.6.2","resolved":"https://registry.npmjs.org/@types/node/-/node-26.6.2.tgz","integrity":"sha512-X1P21scMv4zGKLYqjdGjaKa7COa0RKVYYZZN/NfvLQ1JegxFhdhpZG/Lyn8AXx6CDUavKAd11v6BvfpkDByK8g==","license":"MIT","dependencies":{"undici-types":"~8.9.0"}},"node_modules/ajv":{"version":"8.20.0","resolved":"https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz","integrity":"sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==","license":"MIT","dependencies":{"fast-deep-equal":"^3.1.3","fast-uri":"^3.0.1","json-schema-traverse":"^1.0.0","require-from-string":"^2.0.2"},"funding":{"type":"github","url":"https://github.com/sponsors/epoberezkin"}},"node_modules/ajv-formats":{"version":"3.0.1","resolved":"https://registry.npmjs.org/ajv-formats/-/ajv-formats-3.0.1.tgz","integrity":"sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==","license":"MIT","dependencies":{"ajv":"^8.0.0"},"peerDependencies":{"ajv":"^8.0.0"},"peerDependenciesMeta":{"ajv":{"optional":true}}},"node_modules/ansi-colors":{"version":"4.1.3","resolved":"https://registry.npmjs.org/ansi-colors/-/ansi-colors-4.1.3.tgz","integrity":"sha512-/6w/C21Pm1A7aZitlI5Ni/2J6FFQN8i1Cvz3kHABAAbw93v/NlvKdVOqz7CCWz/3iv/JplRSEEZ83XION15ovw==","license":"MIT","engines":{"node":">=6"}},"node_modules/ansi-regex":{"version":"5.0.1","resolved":"https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz","integrity":"sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==","license":"MIT","engines":{"node":">=8"}},"node_modules/ansi-styles":{"version":"4.3.0","resolved":"https://registry.npmjs.org/ansi-styles/-/ansi-styles-4.3.0.tgz","integrity":"sha512-zbB9rCJAT1rbjiVDb2hqKFHNYLxgtk8NURxZ3IZwD3F6NtxbXZQCnnSi1Lkx+IDohdPlFp222wVALIheZJQSEg==","license":"MIT","dependencies":{"color-convert":"^2.0.1"},"engines":{"node":">=8"},"funding":{"url":"https://github.com/chalk/ansi-styles?sponsor=1"}},"node_modules/atomically":{"version":"2.1.1","resolved":"https://registry.npmjs.org/atomically/-/atomically-2.1.1.tgz","integrity":"sha512-P4w9o2dqARji6P7MHprklbfiArZAWvo07yW7qs3pdljb3BWr12FIB7W+p0zJiuiVsUpRO0iZn1kFFcpPegg0tQ==","license":"MIT","dependencies":{"stubborn-fs":"^2.0.0","when-exit":"^2.1.4"}},"node_modules/axe-core":{"version":"4.13.0","resolved":"https://registry.npmjs.org/axe-core/-/axe-core-4.13.0.tgz","integrity":"sha512-UzGt8zg7Ny8djbYMhxl2zuEevVa7r2gJjYY5Lwr1xM7+XU2nd6CkIWFTVcCIbAP63vSz71NaVyyuSk9lHKcy0A==","license":"MPL-2.0","engines":{"node":">=4"}},"node_modules/chrome-launcher":{"version":"1.2.1","resolved":"https://registry.npmjs.org/chrome-launcher/-/chrome-launcher-1.2.1.tgz","integrity":"sha512-qmFR5PLMzHyuNJHwOloHPAHhbaNglkfeV/xDtt5b7xiFFyU1I+AZZX0PYseMuhenJSSirgxELYIbswcoc+5H4A==","license":"Apache-2.0","dependencies":{"@types/node":"*","escape-string-regexp":"^4.0.0","is-wsl":"^2.2.0","lighthouse-logger":"^2.0.1"},"bin":{"print-chrome-path":"bin/print-chrome-path.cjs"},"engines":{"node":">=12.13.0"}},"node_modules/chromium-bidi":{"version":"17.0.2","resolved":"https://registry.npmjs.org/chromium-bidi/-/chromium-bidi-17.0.2.tgz","integrity":"sha512-5v9GQFhTktFvotn/OFNJBmKLKRAb6n9r0bVCwf7sHgWc3/JryK0bj1nn93L3pHFrfgcsu6Be6EWsDi+1XHTGDg==","license":"Apache-2.0","dependencies":{"mitt":"^3.0.1","zod":"^3.24.1"},"engines":{"node":">=20.19.0 <22.0.0 || >=22.12.0"},"peerDependencies":{"devtools-protocol":"*"}},"node_modules/cjs-module-lexer":{"version":"2.2.1","resolved":"https://registry.npmjs.org/cjs-module-lexer/-/cjs-module-lexer-2.2.1.tgz","integrity":"sha512-Ca8swihM+/4yKecYHY52kgJd300hi2lADU/a1RxNTRe+RJ9jvqQlESpbz9DnG9mowez8qwXHB8qYdIUw9e+F5Q==","license":"MIT"},"node_modules/cliui":{"version":"8.0.1","resolved":"https://registry.npmjs.org/cliui/-/cliui-8.0.1.tgz","integrity":"sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==","license":"ISC","dependencies":{"string-width":"^4.2.0","strip-ansi":"^6.0.1","wrap-ansi":"^7.0.0"},"engines":{"node":">=12"}},"node_modules/color-convert":{"version":"2.0.1","resolved":"https://registry.npmjs.org/color-convert/-/color-convert-2.0.1.tgz","integrity":"sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==","license":"MIT","dependencies":{"color-name":"~1.1.4"},"engines":{"node":">=7.0.0"}},"node_modules/color-name":{"version":"1.1.4","resolved":"https://registry.npmjs.org/color-name/-/color-name-1.1.4.tgz","integrity":"sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==","license":"MIT"},"node_modules/configstore":{"version":"7.1.0","resolved":"https://registry.npmjs.org/configstore/-/configstore-7.1.0.tgz","integrity":"sha512-N4oog6YJWbR9kGyXvS7jEykLDXIE2C0ILYqNBZBp9iwiJpoCBWYsuAdW6PPFn6w06jjnC+3JstVvWHO4cZqvRg==","license":"BSD-2-Clause","dependencies":{"atomically":"^2.0.3","dot-prop":"^9.0.0","graceful-fs":"^4.2.11","xdg-basedir":"^5.1.0"},"engines":{"node":">=18"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/csp_evaluator":{"version":"1.1.8","resolved":"https://registry.npmjs.org/csp_evaluator/-/csp_evaluator-1.1.8.tgz","integrity":"sha512-EwOnfYuNbTytvbMKsLixTrRgnjOa0WZCxGy8A9nnSYAicrdwn+T/epU/yjgymmOxlgKnvH+8wXt+7p/8ak5Feg==","license":"Apache-2.0"},"node_modules/debug":{"version":"4.4.3","resolved":"https://registry.npmjs.org/debug/-/debug-4.4.3.tgz","integrity":"sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==","license":"MIT","dependencies":{"ms":"^2.1.3"},"engines":{"node":">=6.0"},"peerDependenciesMeta":{"supports-color":{"optional":true}}},"node_modules/decimal.js":{"version":"10.6.0","resolved":"https://registry.npmjs.org/decimal.js/-/decimal.js-10.6.0.tgz","integrity":"sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==","license":"MIT"},"node_modules/define-lazy-prop":{"version":"2.0.0","resolved":"https://registry.npmjs.org/define-lazy-prop/-/define-lazy-prop-2.0.0.tgz","integrity":"sha512-Ds09qNh8yw3khSjiJjiUInaGX9xlqZDY7JVryGxdxV7NPeuqQfplOpQ66yJFZut3jLa5zOwkXw1g9EI2uKh4Og==","license":"MIT","engines":{"node":">=8"}},"node_modules/devtools-protocol":{"version":"0.0.1687809","resolved":"https://registry.npmjs.org/devtools-protocol/-/devtools-protocol-0.0.1687809.tgz","integrity":"sha512-t7kSb+UKYdyxcmqy98U2P86ne6rCve3DIJ4+lp54i/hhClgFuG35JrLj23rO14Jw3sWDsp7i+22QhNU0+/qk8g==","license":"BSD-3-Clause"},"node_modules/dot-prop":{"version":"9.0.0","resolved":"https://registry.npmjs.org/dot-prop/-/dot-prop-9.0.0.tgz","integrity":"sha512-1gxPBJpI/pcjQhKgIU91II6Wkay+dLcN3M6rf2uwP8hRur3HtQXjVrdAK3sjC0piaEuxzMwjXChcETiJl47lAQ==","license":"MIT","dependencies":{"type-fest":"^4.18.2"},"engines":{"node":">=18"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/emoji-regex":{"version":"8.0.0","resolved":"https://registry.npmjs.org/emoji-regex/-/emoji-regex-8.0.0.tgz","integrity":"sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==","license":"MIT"},"node_modules/enquirer":{"version":"2.4.1","resolved":"https://registry.npmjs.org/enquirer/-/enquirer-2.4.1.tgz","integrity":"sha512-rRqJg/6gd538VHvR3PSrdRBb/1Vy2YfzHqzvbhGIQpDRKIa4FgV/54b5Q1xYSxOOwKvjXweS26E0Q+nAMwp2pQ==","license":"MIT","dependencies":{"ansi-colors":"^4.1.1","strip-ansi":"^6.0.1"},"engines":{"node":">=8.6"}},"node_modules/es-module-lexer":{"version":"3.0.2","resolved":"https://registry.npmjs.org/es-module-lexer/-/es-module-lexer-3.0.2.tgz","integrity":"sha512-BuIB67FngDSyQ/dpQNOZybwdEBDUGJQvOqwWr4ha/ufYiqzuEwPkKO2zLhRAgay28tStRIHUeWmszZAJo3GCOg==","license":"MIT"},"node_modules/escalade":{"version":"3.2.0","resolved":"https://registry.npmjs.org/escalade/-/escalade-3.2.0.tgz","integrity":"sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==","license":"MIT","engines":{"node":">=6"}},"node_modules/escape-string-regexp":{"version":"4.0.0","resolved":"https://registry.npmjs.org/escape-string-regexp/-/escape-string-regexp-4.0.0.tgz","integrity":"sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==","license":"MIT","engines":{"node":">=10"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/fast-deep-equal":{"version":"3.1.3","resolved":"https://registry.npmjs.org/fast-deep-equal/-/fast-deep-equal-3.1.3.tgz","integrity":"sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==","license":"MIT"},"node_modules/fast-uri":{"version":"3.1.8","resolved":"https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.8.tgz","integrity":"sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg==","funding":[{"type":"github","url":"https://github.com/sponsors/fastify"},{"type":"opencollective","url":"https://opencollective.com/fastify"}],"license":"BSD-3-Clause"},"node_modules/get-caller-file":{"version":"2.0.5","resolved":"https://registry.npmjs.org/get-caller-file/-/get-caller-file-2.0.5.tgz","integrity":"sha512-DyFP3BM/3YHTQOCUL/w0OZHR0lpKeGrxotcHWcqNEdnltqFwXVfhEBQ94eIo34AfQpo0rGki4cyIiftY06h2Fg==","license":"ISC","engines":{"node":"6.* || 8.* || >= 10.*"}},"node_modules/get-east-asian-width":{"version":"1.7.0","resolved":"https://registry.npmjs.org/get-east-asian-width/-/get-east-asian-width-1.7.0.tgz","integrity":"sha512-XjH1AECxf0giL2V1aU8vKyRR2ppRUb5c0EvT7zuJTokQ74bNo52zOtghqdWIqrhUD79fo3x0WfKZdOqxF6LG1Q==","license":"MIT","engines":{"node":">=18"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/graceful-fs":{"version":"4.2.11","resolved":"https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz","integrity":"sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==","license":"ISC"},"node_modules/http-link-header":{"version":"1.1.4","resolved":"https://registry.npmjs.org/http-link-header/-/http-link-header-1.1.4.tgz","integrity":"sha512-xT3GPW6/ZbGuw4UvwHqErSCEjNUlwbQJuZn9/q5U4WEKfp2kENVCAlousG1zLxHeaQ/ffOHUNpWamvkbBW0eNw==","license":"MIT","engines":{"node":">=6.0.0"}},"node_modules/image-ssim":{"version":"0.2.0","resolved":"https://registry.npmjs.org/image-ssim/-/image-ssim-0.2.0.tgz","integrity":"sha512-W7+sO6/yhxy83L0G7xR8YAc5Z5QFtYEXXRV6EaE8tuYBZJnA3gVgp3q7X7muhLZVodeb9UfvjSbwt9VJwjIYAg==","license":"MIT"},"node_modules/import-in-the-middle":{"version":"3.5.1","resolved":"https://registry.npmjs.org/import-in-the-middle/-/import-in-the-middle-3.5.1.tgz","integrity":"sha512-mPKuL8bPQzecui2KK6Gb+M8JvJoHnhS1FeYGa22QopBmlevF5F0FE6ued/B5EgHDeIoMTONIpDWWFKUPOG0DBQ==","license":"Apache-2.0","dependencies":{"cjs-module-lexer":"^2.2.0","es-module-lexer":"^3.0.2","module-details-from-path":"^1.0.4"},"engines":{"node":">=18"}},"node_modules/intl-messageformat":{"version":"10.7.18","resolved":"https://registry.npmjs.org/intl-messageformat/-/intl-messageformat-10.7.18.tgz","integrity":"sha512-m3Ofv/X/tV8Y3tHXLohcuVuhWKo7BBq62cqY15etqmLxg2DZ34AGGgQDeR+SCta2+zICb1NX83af0GJmbQ1++g==","license":"BSD-3-Clause","dependencies":{"@formatjs/ecma402-abstract":"2.3.6","@formatjs/fast-memoize":"2.2.7","@formatjs/icu-messageformat-parser":"2.11.4","tslib":"^2.8.0"}},"node_modules/is-docker":{"version":"2.2.1","resolved":"https://registry.npmjs.org/is-docker/-/is-docker-2.2.1.tgz","integrity":"sha512-F+i2BKsFrH66iaUFc0woD8sLy8getkwTwtOBjvs56Cx4CgJDeKQeqfz8wAYiSb8JOprWhHH5p77PbmYCvvUuXQ==","license":"MIT","bin":{"is-docker":"cli.js"},"engines":{"node":">=8"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/is-fullwidth-code-point":{"version":"3.0.0","resolved":"https://registry.npmjs.org/is-fullwidth-code-point/-/is-fullwidth-code-point-3.0.0.tgz","integrity":"sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg==","license":"MIT","engines":{"node":">=8"}},"node_modules/is-wsl":{"version":"2.2.0","resolved":"https://registry.npmjs.org/is-wsl/-/is-wsl-2.2.0.tgz","integrity":"sha512-fKzAra0rGJUUBwGBgNkHZuToZcn+TtXHpeCgmkMJMMYx1sQDYaCSyjJBSCa2nH1DGm7s3n1oBnohoVTBaN7Lww==","license":"MIT","dependencies":{"is-docker":"^2.0.0"},"engines":{"node":">=8"}},"node_modules/jpeg-js":{"version":"0.4.4","resolved":"https://registry.npmjs.org/jpeg-js/-/jpeg-js-0.4.4.tgz","integrity":"sha512-WZzeDOEtTOBK4Mdsar0IqEU5sMr3vSV2RqkAIzUEV2BHnUfKGyswWFPFwK5EeDo93K3FohSHbLAjj0s1Wzd+dg==","license":"BSD-3-Clause"},"node_modules/js-library-detector":{"version":"6.7.0","resolved":"https://registry.npmjs.org/js-library-detector/-/js-library-detector-6.7.0.tgz","integrity":"sha512-c80Qupofp43y4cJ7+8TTDN/AsDwLi5oOm/plBrWI+iQt485vKXCco+yVmOwEgdo9VOdsYTuV0UlTeetVPTriXA==","license":"MIT","engines":{"node":">=12"}},"node_modules/json-schema-traverse":{"version":"1.0.0","resolved":"https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-1.0.0.tgz","integrity":"sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==","license":"MIT"},"node_modules/legacy-javascript":{"version":"0.0.1","resolved":"https://registry.npmjs.org/legacy-javascript/-/legacy-javascript-0.0.1.tgz","integrity":"sha512-lPyntS4/aS7jpuvOlitZDFifBCb4W8L/3QU0PLbUTUj+zYah8rfVjYic88yG7ZKTxhS5h9iz7duT8oUXKszLhg==","license":"Apache-2.0"},"node_modules/lighthouse":{"version":"13.5.0","resolved":"https://registry.npmjs.org/lighthouse/-/lighthouse-13.5.0.tgz","integrity":"sha512-w/yYIwg7mP9pCwkcbAXRztnvKHua2dJnZaNptPLa1cEw+akr6lbsIDiUOLsQwvaiAUr0xvxdmwvAzl3pj3Np0A==","license":"Apache-2.0","dependencies":{"@paulirish/trace_engine":"0.0.65","@sentry/node":"^10.0.0","ajv":"^8.20.0","ajv-formats":"^3.0.1","axe-core":"^4.13.0","chrome-launcher":"^1.2.1","configstore":"^7.0.0","csp_evaluator":"1.1.8","devtools-protocol":"0.0.1687809","enquirer":"^2.3.6","http-link-header":"^1.1.1","intl-messageformat":"^10.5.3","jpeg-js":"^0.4.4","js-library-detector":"^6.7.0","lighthouse-logger":"^2.0.2","lighthouse-stack-packs":"1.12.3","lodash-es":"^4.17.21","lookup-closest-locale":"6.2.0","open":"^8.4.0","puppeteer-core":"^25.9.0","robots-parser":"^3.0.1","speedline-core":"^1.4.3","third-party-web":"^0.30.0","tldts-icann":"^7.4.13","web-features":"^3.39.0","ws":"^7.0.0","yargs":"^17.3.1","yargs-parser":"^21.0.0"},"bin":{"chrome-debug":"core/scripts/manual-chrome-launcher.js","lighthouse":"cli/index.js","smokehouse":"cli/test/smokehouse/frontends/smokehouse-bin.js"},"engines":{"node":">=22.19"}},"node_modules/lighthouse-logger":{"version":"2.0.2","resolved":"https://registry.npmjs.org/lighthouse-logger/-/lighthouse-logger-2.0.2.tgz","integrity":"sha512-vWl2+u5jgOQuZR55Z1WM0XDdrJT6mzMP8zHUct7xTlWhuQs+eV0g+QL0RQdFjT54zVmbhLCP8vIVpy1wGn/gCg==","license":"Apache-2.0","dependencies":{"debug":"^4.4.1","marky":"^1.2.2"}},"node_modules/lighthouse-stack-packs":{"version":"1.12.3","resolved":"https://registry.npmjs.org/lighthouse-stack-packs/-/lighthouse-stack-packs-1.12.3.tgz","integrity":"sha512-d8IsOpE83kbANgnM+Tp8+x6HcMpX9o2ITBiUERssgzAIFdZCQzs/f4k6D0DLQTE59enml9mbAOU52Wu35exWtg==","license":"Apache-2.0"},"node_modules/lodash-es":{"version":"4.18.1","resolved":"https://registry.npmjs.org/lodash-es/-/lodash-es-4.18.1.tgz","integrity":"sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A==","license":"MIT"},"node_modules/lookup-closest-locale":{"version":"6.2.0","resolved":"https://registry.npmjs.org/lookup-closest-locale/-/lookup-closest-locale-6.2.0.tgz","integrity":"sha512-/c2kL+Vnp1jnV6K6RpDTHK3dgg0Tu2VVp+elEiJpjfS1UyY7AjOYHohRug6wT0OpoX2qFgNORndE9RqesfVxWQ==","license":"MIT"},"node_modules/marky":{"version":"1.3.0","resolved":"https://registry.npmjs.org/marky/-/marky-1.3.0.tgz","integrity":"sha512-ocnPZQLNpvbedwTy9kNrQEsknEfgvcLMvOtz3sFeWApDq1MXH1TqkCIx58xlpESsfwQOnuBO9beyQuNGzVvuhQ==","license":"Apache-2.0"},"node_modules/mitt":{"version":"3.0.1","resolved":"https://registry.npmjs.org/mitt/-/mitt-3.0.1.tgz","integrity":"sha512-vKivATfr97l2/QBCYAkXYDbrIWPM2IIKEl7YPhjCvKlG3kE2gm+uBo6nEXK3M5/Ffh/FLpKExzOQ3JJoJGFKBw==","license":"MIT"},"node_modules/modern-tar":{"version":"0.8.5","resolved":"https://registry.npmjs.org/modern-tar/-/modern-tar-0.8.5.tgz","integrity":"sha512-snEhs+6G5Tjd4I7tLCDOaoln2RgE0bD19RzEKgvgK2hZ5VKy3MpLhLTZ2fWpXSTg4K2cyPwp+VHATFJhxfnOeA==","license":"MIT","engines":{"node":">=18.0.0"}},"node_modules/module-details-from-path":{"version":"1.0.4","resolved":"https://registry.npmjs.org/module-details-from-path/-/module-details-from-path-1.0.4.tgz","integrity":"sha512-EGWKgxALGMgzvxYF1UyGTy0HXX/2vHLkw6+NvDKW2jypWbHpjQuj4UMcqQWXHERJhVGKikolT06G3bcKe4fi7w==","license":"MIT"},"node_modules/ms":{"version":"2.1.3","resolved":"https://registry.npmjs.org/ms/-/ms-2.1.3.tgz","integrity":"sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==","license":"MIT"},"node_modules/open":{"version":"8.4.2","resolved":"https://registry.npmjs.org/open/-/open-8.4.2.tgz","integrity":"sha512-7x81NCL719oNbsq/3mh+hVrAWmFuEYUqrq/Iw3kUzH8ReypT9QQ0BLoJS7/G9k6N81XjW4qHWtjWwe/9eLy1EQ==","license":"MIT","dependencies":{"define-lazy-prop":"^2.0.0","is-docker":"^2.1.1","is-wsl":"^2.2.0"},"engines":{"node":">=12"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/puppeteer-core":{"version":"25.11.0","resolved":"https://registry.npmjs.org/puppeteer-core/-/puppeteer-core-25.11.0.tgz","integrity":"sha512-Ujym7JbxoAqanaxGcHgmTomfhC01HfDCSuGZ8Hs9boHrDjzbNVMnFRJo2KtbDT9LCRgeJoFnkn9JQZ41eEUrLw==","license":"Apache-2.0","dependencies":{"@puppeteer/browsers":"3.2.2","chromium-bidi":"17.0.2","devtools-protocol":"0.0.1680125","typed-query-selector":"^2.12.2","webdriver-bidi-protocol":"0.4.3","ws":"^8.21.3"},"engines":{"node":">=22.12.0"}},"node_modules/puppeteer-core/node_modules/devtools-protocol":{"version":"0.0.1680125","resolved":"https://registry.npmjs.org/devtools-protocol/-/devtools-protocol-0.0.1680125.tgz","integrity":"sha512-rVARKAvOFJCFkvgX01VLvYqKIvt+cRCqvUxIhB2oAqVGPalxk3w3sb5TUGDagpow/EFblBpm/Zl/29QA2dd+jA==","license":"BSD-3-Clause"},"node_modules/puppeteer-core/node_modules/ws":{"version":"8.21.3","resolved":"https://registry.npmjs.org/ws/-/ws-8.21.3.tgz","integrity":"sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==","license":"MIT","engines":{"node":">=10.0.0"},"peerDependencies":{"bufferutil":"^4.0.1","utf-8-validate":">=5.0.2"},"peerDependenciesMeta":{"bufferutil":{"optional":true},"utf-8-validate":{"optional":true}}},"node_modules/require-directory":{"version":"2.1.1","resolved":"https://registry.npmjs.org/require-directory/-/require-directory-2.1.1.tgz","integrity":"sha512-fGxEI7+wsG9xrvdjsrlmL22OMTTiHRwAMroiEeMgq8gzoLC/PQr7RsRDSTLUg/bZAZtF+TVIkHc6/4RIKrui+Q==","license":"MIT","engines":{"node":">=0.10.0"}},"node_modules/require-from-string":{"version":"2.0.2","resolved":"https://registry.npmjs.org/require-from-string/-/require-from-string-2.0.2.tgz","integrity":"sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==","license":"MIT","engines":{"node":">=0.10.0"}},"node_modules/require-in-the-middle":{"version":"8.0.1","resolved":"https://registry.npmjs.org/require-in-the-middle/-/require-in-the-middle-8.0.1.tgz","integrity":"sha512-QT7FVMXfWOYFbeRBF6nu+I6tr2Tf3u0q8RIEjNob/heKY/nh7drD/k7eeMFmSQgnTtCzLDcCu/XEnpW2wk4xCQ==","license":"MIT","dependencies":{"debug":"^4.3.5","module-details-from-path":"^1.0.3"},"engines":{"node":">=9.3.0 || >=8.10.0 <9.0.0"}},"node_modules/robots-parser":{"version":"3.0.1","resolved":"https://registry.npmjs.org/robots-parser/-/robots-parser-3.0.1.tgz","integrity":"sha512-s+pyvQeIKIZ0dx5iJiQk1tPLJAWln39+MI5jtM8wnyws+G5azk+dMnMX0qfbqNetKKNgcWWOdi0sfm+FbQbgdQ==","license":"MIT","engines":{"node":">=10.0.0"}},"node_modules/speedline-core":{"version":"1.4.3","resolved":"https://registry.npmjs.org/speedline-core/-/speedline-core-1.4.3.tgz","integrity":"sha512-DI7/OuAUD+GMpR6dmu8lliO2Wg5zfeh+/xsdyJZCzd8o5JgFUjCeLsBDuZjIQJdwXS3J0L/uZYrELKYqx+PXog==","license":"MIT","dependencies":{"@types/node":"*","image-ssim":"^0.2.0","jpeg-js":"^0.4.1"},"engines":{"node":">=8.0"}},"node_modules/string-width":{"version":"4.2.3","resolved":"https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz","integrity":"sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==","license":"MIT","dependencies":{"emoji-regex":"^8.0.0","is-fullwidth-code-point":"^3.0.0","strip-ansi":"^6.0.1"},"engines":{"node":">=8"}},"node_modules/strip-ansi":{"version":"6.0.1","resolved":"https://registry.npmjs.org/strip-ansi/-/strip-ansi-6.0.1.tgz","integrity":"sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A==","license":"MIT","dependencies":{"ansi-regex":"^5.0.1"},"engines":{"node":">=8"}},"node_modules/stubborn-fs":{"version":"2.0.0","resolved":"https://registry.npmjs.org/stubborn-fs/-/stubborn-fs-2.0.0.tgz","integrity":"sha512-Y0AvSwDw8y+nlSNFXMm2g6L51rBGdAQT20J3YSOqxC53Lo3bjWRtr2BKcfYoAf352WYpsZSTURrA0tqhfgudPA==","license":"MIT","dependencies":{"stubborn-utils":"^1.0.1"}},"node_modules/stubborn-utils":{"version":"1.0.2","resolved":"https://registry.npmjs.org/stubborn-utils/-/stubborn-utils-1.0.2.tgz","integrity":"sha512-zOh9jPYI+xrNOyisSelgym4tolKTJCQd5GBhK0+0xJvcYDcwlOoxF/rnFKQ2KRZknXSG9jWAp66fwP6AxN9STg==","license":"MIT"},"node_modules/third-party-web":{"version":"0.30.0","resolved":"https://registry.npmjs.org/third-party-web/-/third-party-web-0.30.0.tgz","integrity":"sha512-p+PfyL5U0ediGzvwPzMSdD9MnC8rHW6nWJJVLIQvqN7RsSqfaZ+7n4c9GILqH36EYR0eXB9CzAeCRnKFr/9uJg==","license":"MIT"},"node_modules/tldts-core":{"version":"7.4.14","resolved":"https://registry.npmjs.org/tldts-core/-/tldts-core-7.4.14.tgz","integrity":"sha512-KYkjfJHnIC5t+Gy7hPrMHgJmWc/N9FfmS+fggRPSlpFckidpB9HD6OzPsSTkfDH+MpZgcu2tJPGgLfHl979N1Q==","license":"MIT"},"node_modules/tldts-icann":{"version":"7.4.14","resolved":"https://registry.npmjs.org/tldts-icann/-/tldts-icann-7.4.14.tgz","integrity":"sha512-QLXN+wFFNFQOSQuFnPb2FzLEseVCUe3atj8xOQejtMgKLDN73mf4UTGVxkJRimdUKKGp+PKoAyeV3CtzAgP7GA==","license":"MIT","dependencies":{"tldts-core":"^7.4.14"}},"node_modules/tslib":{"version":"2.8.1","resolved":"https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz","integrity":"sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==","license":"0BSD"},"node_modules/type-fest":{"version":"4.41.0","resolved":"https://registry.npmjs.org/type-fest/-/type-fest-4.41.0.tgz","integrity":"sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==","license":"(MIT OR CC0-1.0)","engines":{"node":">=16"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/typed-query-selector":{"version":"2.12.2","resolved":"https://registry.npmjs.org/typed-query-selector/-/typed-query-selector-2.12.2.tgz","integrity":"sha512-EOPFbyIub4ngnEdqi2yOcNeDLaX/0jcE1JoAXQDDMIthap7FoN795lc/SHfIq2d416VufXpM8z/lD+WRm2gfOQ==","license":"MIT"},"node_modules/undici-types":{"version":"8.9.0","resolved":"https://registry.npmjs.org/undici-types/-/undici-types-8.9.0.tgz","integrity":"sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==","license":"MIT"},"node_modules/web-features":{"version":"3.39.0","resolved":"https://registry.npmjs.org/web-features/-/web-features-3.39.0.tgz","integrity":"sha512-4DgSV2sNjlLMZg1XqaKceUhbKfdUPOXQ63v9XdKOv0EOB4zBIfNh16tvrxlTFAL21HIOxtk2/e+49uBK9WF+xg==","license":"Apache-2.0"},"node_modules/webdriver-bidi-protocol":{"version":"0.4.3","resolved":"https://registry.npmjs.org/webdriver-bidi-protocol/-/webdriver-bidi-protocol-0.4.3.tgz","integrity":"sha512-uuN0goWfxP22B7J/uAgBpOYNPttC+XVseYE+rSY5+rQ+YBeVz/VORw8WbmLVcqW78zNg5A4qnjNXYUWR3il2ig==","license":"Apache-2.0"},"node_modules/when-exit":{"version":"2.1.5","resolved":"https://registry.npmjs.org/when-exit/-/when-exit-2.1.5.tgz","integrity":"sha512-VGkKJ564kzt6Ms1dbgPP/yuIoQCrsFAnRbptpC5wOEsDaNsbCB2bnfnaA8i/vRs5tjUSEOtIuvl9/MyVsvQZCg==","license":"MIT"},"node_modules/wrap-ansi":{"version":"7.0.0","resolved":"https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-7.0.0.tgz","integrity":"sha512-YVGIj2kamLSTxw6NsZjoBxfSwsn0ycdesmc4p+Q21c5zPuZ1pl+NfxVdxPtdHvmNVOQ6XSYG4AUtyt/Fi7D16Q==","license":"MIT","dependencies":{"ansi-styles":"^4.0.0","string-width":"^4.1.0","strip-ansi":"^6.0.0"},"engines":{"node":">=10"},"funding":{"url":"https://github.com/chalk/wrap-ansi?sponsor=1"}},"node_modules/ws":{"version":"7.5.13","resolved":"https://registry.npmjs.org/ws/-/ws-7.5.13.tgz","integrity":"sha512-rsKI6xDBFVf4r/x8XyChGK04QR/XHroxs/jUcoWvtEZM8TPU/X/uIY9B1CsSzYws9ZJb/6bbBu7dPhFW00CAoA==","license":"MIT","engines":{"node":">=8.3.0"},"peerDependencies":{"bufferutil":"^4.0.1","utf-8-validate":"^5.0.2"},"peerDependenciesMeta":{"bufferutil":{"optional":true},"utf-8-validate":{"optional":true}}},"node_modules/xdg-basedir":{"version":"5.1.0","resolved":"https://registry.npmjs.org/xdg-basedir/-/xdg-basedir-5.1.0.tgz","integrity":"sha512-GCPAHLvrIH13+c0SuacwvRYj2SxJXQ4kaVTT5xgL3kPrz56XxkF21IGhjSE1+W0aw7gpBWRGXLCPnPby6lSpmQ==","license":"MIT","engines":{"node":">=12"},"funding":{"url":"https://github.com/sponsors/sindresorhus"}},"node_modules/y18n":{"version":"5.0.8","resolved":"https://registry.npmjs.org/y18n/-/y18n-5.0.8.tgz","integrity":"sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA==","license":"ISC","engines":{"node":">=10"}},"node_modules/yargs":{"version":"17.7.3","resolved":"https://registry.npmjs.org/yargs/-/yargs-17.7.3.tgz","integrity":"sha512-GZtjxm/J/4TSxuL3FNYjCmLktBTnIw/rVmKSIyKeYAZpmJB2ig9VauCC5xsa82GNKVKDAqpOn3KVzNt0zmrU0g==","license":"MIT","dependencies":{"cliui":"^8.0.1","escalade":"^3.1.1","get-caller-file":"^2.0.5","require-directory":"^2.1.1","string-width":"^4.2.3","y18n":"^5.0.5","yargs-parser":"^21.1.1"},"engines":{"node":">=12"}},"node_modules/yargs-parser":{"version":"21.1.1","resolved":"https://registry.npmjs.org/yargs-parser/-/yargs-parser-21.1.1.tgz","integrity":"sha512-tVpsJW7DdjecAiFpbIB1e3qxIQsE6NoPc5/eTdrbbIC4h0LVsWhnoa3g+m2HclBIujHzsxZ4VJVA+GUuc2/LBw==","license":"ISC","engines":{"node":">=12"}},"node_modules/zod":{"version":"3.25.76","resolved":"https://registry.npmjs.org/zod/-/zod-3.25.76.tgz","integrity":"sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==","license":"MIT","funding":{"url":"https://github.com/sponsors/colinhacks"}}}}');
 ;// CONCATENATED MODULE: ./src/lighthouse-runtime/package.json
@@ -209692,7 +211339,7 @@ const runCommand = (command, args, { cwd, timeoutMs }) => new Promise((resolve, 
     });
 });
 // A native dynamic import that ncc must not try to resolve at build time.
-const importModule = (href) => import(/* webpackIgnore: true */ href);
+const lighthouse_importModule = (href) => import(/* webpackIgnore: true */ href);
 async function exists(path) {
     try {
         await (0,promises_namespaceObject.access)(path);
@@ -209723,12 +211370,12 @@ async function loadRuntimeLighthouse(options = {}) {
             '--loglevel=error',
         ], { cwd: installDirectory, timeoutMs: INSTALL_TIMEOUT_MS });
     }
-    const load = options.importModule ?? importModule;
+    const load = options.importModule ?? lighthouse_importModule;
     const [lighthouse, median] = await Promise.all([
         load((0,external_node_url_.pathToFileURL)(entry).href),
         load((0,external_node_url_.pathToFileURL)(medianRun).href),
     ]);
-    return createLighthouseEngine({
+    return performance_createLighthouseEngine({
         lighthouse: lighthouse,
         medianRun: median,
     });
@@ -209738,7 +211385,7 @@ async function loadRuntimeLighthouse(options = {}) {
 
 
 
-const REPORT_FILE_NAME = 'qualitygate-report.json';
+const publish_REPORT_FILE_NAME = 'qualitygate-report.json';
 class GitHubCommentError extends Error {
     code = 'github_comment_failed';
     constructor(message, options) {
@@ -209768,7 +211415,7 @@ const defaultOutputWriter = async (path, line) => {
 function renderReportJson(result) {
     const { verdict } = result;
     return `${JSON.stringify({
-        url: scrubUrl(result.report.url),
+        url: scrub_scrubUrl(result.report.url),
         bundle: result.report.bundleId,
         passed: verdict.passed,
         ...(verdict.failReason === undefined
@@ -209776,7 +211423,10 @@ function renderReportJson(result) {
             : { failReason: verdict.failReason }),
         issueCounts: verdict.issueCounts,
         failOn: result.authorization.effectiveConfig.failOn,
-        results: result.report.results.map(scrubCheckResult),
+        ...(isAppCommentReportResponse(verdict) && verdict.aiReview
+            ? { aiReview: verdict.aiReview }
+            : {}),
+        results: result.report.results.map(scrub_scrubCheckResult),
     }, null, 2)}\n`;
 }
 function githubHeaders(token) {
@@ -209906,12 +211556,17 @@ async function publishActionResult(prepared, result, options = {}) {
         failOn: result.authorization.effectiveConfig.failOn,
         report: result.report,
         summary: result.verdict,
+        ...comparisonRenderInput(result.report.results, result.authorization.effectiveConfig.failOn, 'comparison' in result.verdict ? result.verdict.comparison : undefined),
     };
     const enrichedVerdict = isAppCommentReportResponse(result.verdict)
         ? result.verdict
         : undefined;
     const renderInput = enrichedVerdict
-        ? { ...commonRenderInput, usage: enrichedVerdict.usage }
+        ? {
+            ...commonRenderInput,
+            usage: enrichedVerdict.usage,
+            aiReview: enrichedVerdict.aiReview,
+        }
         : {
             ...commonRenderInput,
             remainingRuns: result.authorization.remainingRuns,
@@ -209919,11 +211574,11 @@ async function publishActionResult(prepared, result, options = {}) {
     await (options.summaryWriter ?? defaultSummaryWriter)(summaryPath, renderJobSummary(renderInput));
     // The log is where a failed step is read first, and Markdown is not rendered
     // there, so it gets its own plain-text account.
-    (options.log ?? console.info)(renderLogSummary(commonRenderInput));
+    (options.log ?? console.info)(renderLogSummary(renderInput));
     const reportDirectory = environment.RUNNER_TEMP?.trim();
     const outputPath = environment.GITHUB_OUTPUT?.trim();
     if (reportDirectory) {
-        const reportPath = (0,external_node_path_.join)(reportDirectory, REPORT_FILE_NAME);
+        const reportPath = (0,external_node_path_.join)(reportDirectory, publish_REPORT_FILE_NAME);
         try {
             await (options.reportWriter ?? defaultReportWriter)(reportPath, renderReportJson(result));
             if (outputPath) {
@@ -212006,7 +213661,7 @@ async function runRepositorySecurity(prepared, options = {}) {
 // The Action's registry swaps in a performance check that installs Lighthouse
 // on demand, since the bundled file cannot carry it. Nothing else differs.
 function actionChecks(loadLighthouse) {
-    return new Map(BUILT_IN_CHECKS).set(PERFORMANCE_CHECK_ID, createPerformanceCheck({ loadLighthouse }));
+    return new Map(bundles_BUILT_IN_CHECKS).set(performance_PERFORMANCE_CHECK_ID, performance_createPerformanceCheck({ loadLighthouse }));
 }
 function runnerOptions(options) {
     return {

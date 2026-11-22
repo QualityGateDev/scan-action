@@ -57,11 +57,16 @@ so the action can post its comment.
 | -------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `url`          | required               | HTTP or HTTPS address to scan. Its host must be one of the project's allowed domains.                |
 | `api_key`      | none                   | Project API key. Optional for repositories connected through the GitHub App with `id-token: write`.  |
-| `bundle`       | `a11y`                 | `a11y`, `ada`, `seo`, `security`, `links`, `full`, `perf`, `geo`, `seo-deep`, or `secrets-exposure`. |
+| `bundle`       | `a11y`                 | `a11y`, `ada`, `seo`, `security`, `links`, `full`, `full-runtime`, `perf`, `geo`, `seo-deep`, or `secrets-exposure`. |
 | `fail_on`      | `critical=0,serious=0` | Limits, or `regression` to fail only on issues the pull request introduced.                          |
 | `wait_for_url` | `true`                 | Wait for the URL to return a `2xx` response before scanning.                                         |
 | `wait_timeout` | `120`                  | Seconds to wait for the URL.                                                                         |
 | `comment`      | `true`                 | Create or update the QualityGate pull request comment.                                               |
+| `fail_on_new`  | `false`                | `true` counts the `fail_on` limits against new findings only, like `regression`.                     |
+| `baseline_branch` | default branch      | Branch regression mode compares with. Set it on that branch's push runs too.                         |
+| `ignore`       | none                   | Globs or `/regex/` per line that the `full-runtime` runtime errors check skips.                      |
+| `budgets`      | none                   | Experimental lab budgets for `perf`, such as `lcp=2500,cls=0.1,tbt=200`.                             |
+| `perf_form_factor` | `mobile`           | `mobile`, `desktop` or `both` for `perf`.                                                            |
 
 The step's output `report_path` names a JSON file with the verdict and every
 finding. The comment lists up to 50 findings, the job summary up to 500, and
