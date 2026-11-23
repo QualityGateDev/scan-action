@@ -17597,9 +17597,11 @@ const SeveritySchema = schemas_enum([
  * spelling of a threshold rather than two.
  */
 const FailOnModeSchema = schemas_enum(['absolute', 'regression']);
+const CountModeSchema = schemas_enum(['occurrences', 'groups']);
 const contract_FailOnSchema = object({
     maxCritical: schemas_number().int().nonnegative(),
     maxSerious: schemas_number().int().nonnegative(),
+    countMode: CountModeSchema.optional(),
     // Optional rather than defaulted, for the reason `dedupeProtocolVersion` is:
     // a client parses its own request before sending it, and a default would put
     // the field on the wire, where a backend deployed before regression mode
@@ -17617,6 +17619,14 @@ const BranchNameSchema = schemas_string()
     .min(1)
     .max(255)
     .regex(/^(?!\/)(?!.*\.\.)(?!.*\/$)[^\s~^:?*[\\]+$/, 'must be a Git branch name');
+const CiStepSettingsSchema = object({
+    id: schemas_string().uuid(),
+    pages: array(schemas_string().regex(/^[a-f0-9]{64}$/))
+        .min(1)
+        .max(20),
+    ignore: schemas_string().regex(/^[a-f0-9]{64}$/),
+})
+    .strict();
 const RequestedConfigSchema = object({
     bundle: BundleIdSchema,
     failOn: contract_FailOnSchema,
@@ -17626,6 +17636,7 @@ const RequestedConfigSchema = object({
     // it is not the project's default branch. Set by the server from the
     // request's top-level `baselineBranch`; absent means the default branch.
     baselineBranch: BranchNameSchema.optional(),
+    ciStep: CiStepSettingsSchema.optional(),
 })
     .strict();
 const DENY_REASONS = [
@@ -17764,6 +17775,9 @@ const ReportRequestSchema = object({
     // Only sent for analysis-tier bundles, which a backend that predates them
     // never authorizes, so its strict schema never meets this field.
     collected: CollectedSignalsSchema.optional(),
+    ignoredAnalysisRules: array(schemas_string().regex(/^[\w-]{1,500}$/))
+        .max(50)
+        .optional(),
 })
     .strict();
 const IssueCountsSchema = object({
@@ -17864,6 +17878,10 @@ const CommentDeliverySchema = schemas_enum([
 const LegacyReportResponseSchema = GateVerdictSchema;
 /** Earlier findings this run can be compared with, for display only. */
 const RunComparisonSchema = object({
+    settingsChanged: array(schemas_string().min(1).max(160))
+        .min(1)
+        .max(3)
+        .optional(),
     // The accepted state of the baseline branch, the one regression mode gates
     // against. Absent when there is no usable baseline.
     baseline: object({
@@ -17893,6 +17911,8 @@ const AppCommentReportResponseSchema = GateVerdictSchema.extend({
     // The analysed, authoritative results. Present only for analysis-tier
     // bundles, which only clients that understand this field can request.
     results: array(CheckResultSchema).optional(),
+    ignoredAnalysisFindings: array(object({ checkId: schemas_string(), issue: IssueSchema }))
+        .optional(),
 });
 // The updated Action must accept whichever backend answers it.
 const ReportResponseSchema = union([
@@ -18338,7 +18358,7 @@ function normalizeSegment(segment) {
  * builds. Pure and exported so the rules can be tested directly, since every
  * regression verdict rests on them.
  */
-function normalizeSelector(selector) {
+function fingerprint_normalizeSelector(selector) {
     const trimmed = selector?.trim() ?? '';
     if (trimmed.length === 0)
         return '';
@@ -18380,6 +18400,9 @@ function normalizePagePath(url) {
     const trimmed = collapsed.replace(/\/+$/, '');
     return trimmed.length === 0 ? '/' : trimmed;
 }
+function comparisonPageKey(url) {
+    return normalizePagePath(url) + new URL(url).search;
+}
 /**
  * A stable identity for one finding, so the same issue seen on two scans of the
  * same page produces the same value and a diff can tell "still there" from
@@ -18394,7 +18417,9 @@ function fingerprint_fingerprintIssue(checkId, issue) {
         FINGERPRINT_VERSION,
         checkId,
         issue.ruleId,
-        normalizeSelector(issue.selector),
+        fingerprint_normalizeSelector(checkId === 'seo' && issue.ruleId === 'robots-noindex'
+            ? 'head > meta[name="robots"]'
+            : issue.selector),
         normalizePagePath(issue.url),
     ].join('\n'))
         .digest('hex');
@@ -18534,7 +18559,71 @@ function parseFailOn(value, source) {
     });
 }
 //# sourceMappingURL=fail-on.js.map
+;// CONCATENATED MODULE: ../shared/dist/finding-groups.js
+
+const priority = {
+    critical: 0,
+    serious: 1,
+    moderate: 2,
+    minor: 3,
+};
+function normalizeFindingSelector(selector) {
+    return normalizeSelector(selector?.replace(/#[\w-]+/g, (id) => id.replace(/\d+/g, 'N')));
+}
+function recordedOccurrences(checkId, issue) {
+    if (checkId !== 'runtime-errors')
+        return 1;
+    // Runtime grouped occurrences before v1.3. Count their recorded events in
+    // reports without changing the existing default gate's observation unit.
+    const count = /^(\d+) (?:script|stylesheet|image|font) requests? matching\b/.exec(issue.message)?.[1] ??
+        /^(?:Console error|Uncaught exception) \((\d+) times\):/.exec(issue.message)?.[1];
+    return Math.min(2000, Math.max(1, Number(count ?? 1)));
+}
+function finding_groups_groupFindings(results) {
+    const groups = new Map();
+    for (const { checkId, issues } of results) {
+        for (const issue of issues) {
+            const key = finding_groups_findingGroupKey(checkId, issue);
+            const count = recordedOccurrences(checkId, issue);
+            const existing = groups.get(key);
+            if (!existing) {
+                groups.set(key, {
+                    checkId,
+                    issue,
+                    count,
+                    selectors: issue.selector ? [issue.selector] : [],
+                });
+                continue;
+            }
+            existing.count += count;
+            if (priority[issue.severity] < priority[existing.issue.severity])
+                existing.issue = issue;
+            if (issue.selector &&
+                existing.selectors.length < 3 &&
+                !existing.selectors.includes(issue.selector))
+                existing.selectors.push(issue.selector);
+        }
+    }
+    return [...groups.values()];
+}
+function finding_groups_findingGroupKey(checkId, issue) {
+    const identity = checkId === 'runtime-errors'
+        ? `${issue.selector ?? ''}\n${issue.message
+            .replace(/^\d+ /, '')
+            .replace(/ \(\d+ times\)/, '')
+            .replace(/, for example .+$/, '')}`
+        : normalizeFindingSelector(issue.selector);
+    return JSON.stringify([checkId, issue.ruleId, identity]);
+}
+function finding_groups_countFindingGroups(results) {
+    const counts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
+    for (const { issue } of finding_groups_groupFindings(results))
+        counts[issue.severity]++;
+    return counts;
+}
+//# sourceMappingURL=finding-groups.js.map
 ;// CONCATENATED MODULE: ../shared/dist/gate.js
+
 const DEFAULT_FAIL_ON = {
     maxCritical: 0,
     maxSerious: 0,
@@ -18572,12 +18661,20 @@ function evaluateGate(results, failOn = DEFAULT_FAIL_ON, diff) {
     if (results.length === 0) {
         throw new TypeError('Gate evaluation requires at least one check result');
     }
-    const issueCounts = gate_countIssues(results);
+    const count = failOn.countMode === 'groups' ? countFindingGroups : gate_countIssues;
+    const issueCounts = count(results);
     const regression = failOn.mode === 'regression';
     if (regression && diff === undefined) {
         throw new TypeError('Regression gating requires a diff');
     }
-    const gated = regression && diff ? diff.newIssueCounts : issueCounts;
+    const gated = regression && diff
+        ? failOn.countMode === 'groups'
+            ? count(diff.newIssues.map(({ checkId, issue }) => ({
+                checkId,
+                issues: [issue],
+            })))
+            : diff.newIssueCounts
+        : issueCounts;
     const failures = [];
     if (gated.critical > failOn.maxCritical) {
         failures.push(exceeded('critical', gated.critical, failOn.maxCritical, regression));
@@ -19819,6 +19916,7 @@ const CreateSeoSavedFilterRequestSchema = object({
 
 
 
+
 //# sourceMappingURL=index.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/html-report.js
 
@@ -20386,6 +20484,7 @@ const QUALITYGATE_COMMENT_MARKER = '<!-- qualitygate:comment-marker -->';
 // Bitbucket Cloud escapes raw HTML, so its marker is an unreferenced link
 // definition, which CommonMark renders as nothing.
 const QUALITYGATE_BITBUCKET_COMMENT_MARKER = '[//]: # (qualitygate:comment-marker)';
+const BITBUCKET_COMMENT_LIMIT_BYTES = 24_000;
 const ACCESSIBILITY_DISCLAIMER = 'Automated accessibility checks are a starting point, not a legal conformance assessment.';
 const SEO_DISCLAIMER = 'Automated SEO checks read what this page declares; they do not predict ranking.';
 const SECURITY_DISCLAIMER = 'Automated header checks read the response of one page; they are not a penetration test.';
@@ -20547,6 +20646,9 @@ function comparisonRenderInput(results, failOn, comparison) {
             : undefined;
     const previous = comparison?.previousRun;
     return {
+        ...(comparison?.settingsChanged
+            ? { settingsChanged: comparison.settingsChanged }
+            : {}),
         ...(diff === undefined ? {} : { diff }),
         ...(previous === undefined
             ? {}
@@ -20606,6 +20708,13 @@ function trustedHelpUrl(value) {
         return undefined;
     }
 }
+function shortenCommentSelector(selector) {
+    const parts = selector.split(/\s+>+\s+|\s+(?![^[]*\])/);
+    const tail = parts.slice(-3).join(' > ');
+    if (parts.length <= 3 && selector.length <= 120)
+        return selector;
+    return `…${tail.length > 119 ? tail.slice(-119) : tail}`;
+}
 // A message arrives from the runner and is posted under QualityGate's name, so
 // it must stay plain text: Markdown syntax is escaped, and a zero-width space
 // breaks what escaping does not reliably stop on GitHub, namely `@` mentions,
@@ -20638,18 +20747,30 @@ function formatMessage(message) {
         : plainText(part))
         .join('');
 }
-function formatIssue({ checkId, issue }, attributed) {
+function formatIssue({ checkId, issue, count, selectors }, attributed, concise = false) {
     const safeIssue = scrubIssue(issue);
-    const selector = safeIssue.selector === undefined
+    const locations = selectors?.length
+        ? selectors
+        : safeIssue.selector
+            ? [safeIssue.selector]
+            : [];
+    const selector = locations.length === 0
         ? 'page-level issue'
-        : inlineCode(safeIssue.selector);
+        : locations
+            .map((location) => {
+            const cleaned = scrubIssue({ ...issue, selector: location }).selector ?? location;
+            return inlineCode(concise && checkId === 'a11y'
+                ? shortenCommentSelector(cleaned)
+                : cleaned);
+        })
+            .join(', ');
     const helpUrl = trustedHelpUrl(safeIssue.helpUrl);
     const help = helpUrl === undefined ? '' : ` ([rule help](<${helpUrl}>))`;
     // Which check found it only matters when more than one check ran; on a
     // single-check bundle the label would repeat the bundle line above it.
     const source = attributed ? ` _(${render_checkLabel(checkId)})_` : '';
     const message = formatMessage(safeIssue.message);
-    return `- **[${safeIssue.severity}] ${safeRuleId(safeIssue.ruleId)}** — ${selector}${source}${help}${message === '' ? '' : `\n  ${message}`}`;
+    return `- **[${safeIssue.severity}] ${safeRuleId(safeIssue.ruleId)}${count && count > 1 ? ` × ${count}` : ''}** — ${selector}${source}${help}${message === '' ? '' : `\n  ${message}`}`;
 }
 function sortedBySeverity(issues) {
     return issues
@@ -20663,33 +20784,30 @@ function sortedBySeverity(issues) {
  * prioritized list answers "what first"; this answers "what else", which a
  * reader otherwise has no way to see.
  */
-function allFindings(results, limit, multiCheck, truncatedHint) {
+function allFindings(results, limit, multiCheck, truncatedHint, concise) {
     const lines = [];
     let shown = 0;
     let total = 0;
     for (const result of results) {
-        total += result.issues.length;
         if (result.issues.length === 0)
             continue;
-        const entries = sortedBySeverity(result.issues.map((issue) => ({ checkId: result.checkId, issue })));
+        const entries = sortedBySeverity(groupFindings([result]));
+        total += entries.length;
         const room = Math.max(0, limit - shown);
         if (room === 0)
             continue;
         const listed = entries.slice(0, room);
         shown += listed.length;
         if (multiCheck) {
-            lines.push('', `#### ${render_checkLabel(result.checkId)} (${result.issues.length.toLocaleString('en-US')})`);
+            lines.push('', `#### ${render_checkLabel(result.checkId)} (${entries.length.toLocaleString('en-US')})`);
         }
-        lines.push(...listed.map((entry) => formatIssue(entry, false)));
+        lines.push(...listed.map((entry) => formatIssue(entry, false, concise)));
     }
     if (total > shown) {
         const hidden = total - shown;
         lines.push('', `${hidden.toLocaleString('en-US')} more ${hidden === 1 ? 'finding is' : 'findings are'} not listed here.${truncatedHint}`);
     }
     return lines;
-}
-function attributedIssues(results) {
-    return results.flatMap(({ checkId, issues }) => issues.map((issue) => ({ checkId, issue })));
 }
 function topIssues(issues, limit) {
     return sortedBySeverity(issues).slice(0, limit);
@@ -20746,7 +20864,14 @@ function severityTable(verdict, failOn, diff) {
     // reader to distrust the table.
     const regression = failOn.mode === 'regression';
     const compared = regression && diff?.comparedToBaseline === true;
-    const gated = compared ? diff.newIssueCounts : issueCounts;
+    const gated = compared
+        ? failOn.countMode === 'groups'
+            ? countFindingGroups(diff.newIssues.map(({ checkId, issue }) => ({
+                checkId,
+                issues: [issue],
+            })))
+            : diff.newIssueCounts
+        : issueCounts;
     const status = (severity, maximum) => {
         // Regression mode with no baseline gated on nothing, so no row passed or
         // failed a limit.
@@ -20830,14 +20955,14 @@ function previousRunSummary(comparison, current) {
     ];
 }
 /** Fixed and new issues since the previous run, for the collapsed section. */
-function previousRunLists(comparison, limit, multiCheck) {
+function previousRunLists(comparison, limit, multiCheck, concise) {
     if (comparison === undefined)
         return [];
     const lines = [];
     const list = (title, issues) => {
         if (issues.length === 0)
             return;
-        lines.push(`#### ${title} (${issues.length.toLocaleString('en-US')})`, ...topIssues(issues, limit).map((entry) => formatIssue(entry, multiCheck)), ...(issues.length > limit
+        lines.push(`#### ${title} (${issues.length.toLocaleString('en-US')})`, ...topIssues(issues, limit).map((entry) => formatIssue(entry, multiCheck, concise)), ...(issues.length > limit
             ? [
                 `${(issues.length - limit).toLocaleString('en-US')} more not listed.`,
             ]
@@ -20914,8 +21039,42 @@ function pageLoadLines(report) {
     }
     return lines;
 }
-function totalIssueCount(results) {
-    return results.reduce((total, result) => total + result.issues.length, 0);
+function groupingLine(results) {
+    const groups = groupFindings(results);
+    const occurrences = groups.reduce((total, group) => total + group.count, 0);
+    return `${occurrences.toLocaleString('en-US')} ${occurrences === 1 ? 'occurrence' : 'occurrences'} in ${groups.length.toLocaleString('en-US')} ${groups.length === 1 ? 'group' : 'groups'}`;
+}
+function settingsLine(changes, compared) {
+    return `**Baseline reset: settings changed (${changes.map(formatMessage).join(', ')})**${compared ? '. Shared pages are still compared.' : '.'}`;
+}
+function unusedPatternLines(patterns = []) {
+    return patterns.length
+        ? [
+            '',
+            '**Unused ignore patterns**',
+            ...patterns.map((pattern) => `- ${inlineCode(scrubText(pattern))}`),
+        ]
+        : [];
+}
+function ignoredLines(input, flavor, target) {
+    const ignored = input.report.ignored ?? [];
+    if (ignored.length === 0)
+        return [];
+    const limit = target === 'comment' ? 15 : DEFAULT_SUMMARY_FINDING_LIMIT;
+    return [
+        '',
+        ...collapsible(flavor, `Ignored (${ignored.length})`, [
+            ...ignored
+                .slice(0, limit)
+                .map((entry) => `${formatIssue(entry, true, target === 'comment')}\n  Matched ${inlineCode(scrubText(entry.pattern))}.`),
+            ...(ignored.length > limit
+                ? [
+                    '',
+                    `${ignored.length - limit} additional ignored findings.${input.reportFile ? ` See ${inlineCode(input.reportFile)}.` : ''}`,
+                ]
+                : []),
+        ], 4),
+    ];
 }
 function collapsible(flavor, summary, body, headingLevel = 3) {
     // Bitbucket Cloud escapes raw HTML, so nothing there can collapse; a heading
@@ -20931,7 +21090,7 @@ function collapsible(flavor, summary, body, headingLevel = 3) {
             '</details>',
         ];
 }
-function renderParts(input, target, findingLimitDefault) {
+function renderParts(input, target, findingLimitDefault, showStepDetails = true) {
     const limit = input.topIssueLimit ?? DEFAULT_TOP_ISSUE_LIMIT;
     assertNonnegativeInteger(limit, 'topIssueLimit');
     const findingLimit = input.findingLimit ?? findingLimitDefault;
@@ -20948,20 +21107,22 @@ function renderParts(input, target, findingLimitDefault) {
     // first regardless of severity. They are the ones its author can act on now,
     // and burying them under a more severe issue that was already there is what
     // makes a report ignorable.
+    const groups = groupFindings(input.report.results);
+    const newKeys = new Set(input.diff?.newIssues.map(({ checkId, issue }) => findingGroupKey(checkId, issue)));
     const selectedIssues = input.diff?.comparedToBaseline === true
         ? [
-            ...topIssues(input.diff.newIssues, limit),
-            ...topIssues(input.diff.existingIssues, limit),
+            ...topIssues(groups.filter(({ checkId, issue }) => newKeys.has(findingGroupKey(checkId, issue))), limit),
+            ...topIssues(groups.filter(({ checkId, issue }) => !newKeys.has(findingGroupKey(checkId, issue))), limit),
         ].slice(0, limit)
-        : topIssues(attributedIssues(input.report.results), limit);
-    const totalIssues = totalIssueCount(input.report.results);
+        : topIssues(groups, limit);
+    const totalIssues = groups.length;
     const prioritized = selectedIssues.length === 0
         ? []
         : [
             totalIssues > selectedIssues.length
                 ? `**Top ${selectedIssues.length} of ${totalIssues.toLocaleString('en-US')} findings**`
                 : `**${totalIssues === 1 ? 'Finding' : 'Findings'}**`,
-            ...selectedIssues.map((entry) => formatIssue(entry, multiCheck)),
+            ...selectedIssues.map((entry) => formatIssue(entry, multiCheck, target === 'comment')),
         ];
     const hint = input.reportFile !== undefined
         ? ` Every finding is in \`${input.reportFile.replace(/[`\s]/g, '')}\`, saved with this pipeline run.`
@@ -20973,7 +21134,7 @@ function renderParts(input, target, findingLimitDefault) {
     const findingLines = totalIssues > selectedIssues.length
         ? [
             `#### All findings (${totalIssues.toLocaleString('en-US')})`,
-            ...allFindings(input.report.results, findingLimit, multiCheck, hint),
+            ...allFindings(input.report.results, findingLimit, multiCheck, hint, target === 'comment'),
             '',
         ]
         : [];
@@ -20981,6 +21142,15 @@ function renderParts(input, target, findingLimitDefault) {
         decision: decisionLine(input.summary, presentation, input.diff),
         headline: [
             ...naturalScoreLines(input.report.results),
+            groupingLine(input.report.results) +
+                (input.failOn.countMode === 'groups' ? ' · Gate counts groups' : ''),
+            '',
+            ...(showStepDetails && input.settingsChanged?.length
+                ? [
+                    settingsLine(input.settingsChanged, input.previousRun !== undefined),
+                    '',
+                ]
+                : []),
             ...(input.aiReview
                 ? [
                     input.aiReview.status === 'pending'
@@ -21006,9 +21176,18 @@ function renderParts(input, target, findingLimitDefault) {
         ],
         prioritized,
         details: [
-            ...previousRunLists(input.previousRun, Math.min(findingLimit, 20), multiCheck),
+            ...previousRunLists(input.previousRun, Math.min(findingLimit, 20), multiCheck, target === 'comment'),
             ...findingLines,
             ...pageLoadLines(input.report),
+            ...(input.report.durationMs === undefined
+                ? []
+                : [
+                    '',
+                    `Scan duration: ${(input.report.durationMs / 1000).toFixed(1)}s`,
+                ]),
+            ...(showStepDetails
+                ? unusedPatternLines(input.report.unusedIgnorePatterns)
+                : []),
             '',
             presentation.disclaimer,
         ],
@@ -21039,6 +21218,7 @@ function renderBody(input, flavor, target) {
             ? []
             : ['### Prioritized issues', ...parts.prioritized, '']),
         ...collapsible(flavor, parts.detailsSummary, parts.details),
+        ...ignoredLines(input, flavor, target),
     ].join('\n');
 }
 function pageLabel(report) {
@@ -21056,7 +21236,7 @@ function pageLabel(report) {
  * then one section per page. Each page keeps its own server verdict; the run
  * passes only when every page passed.
  */
-function renderMultiBody(entries, flavor, target, combined) {
+function renderMultiBody(entries, flavor, target, combined, durationMs) {
     const [first] = entries;
     if (first === undefined) {
         throw new TypeError('Expected at least one scanned page to render');
@@ -21072,6 +21252,11 @@ function renderMultiBody(entries, flavor, target, combined) {
         passed ? '## ✅ QualityGate passed' : '## ❌ QualityGate needs attention',
         '',
         `**${presentation.label}** · \`${first.report.bundleId}\` · ${entries.length} pages · [qualitygate.dev](https://qualitygate.dev/)`,
+        '',
+        `${groupingLine(entries.flatMap(({ report }) => report.results))}${durationMs === undefined ? '' : ` · Total duration ${(durationMs / 1000).toFixed(1)}s`}`,
+        ...new Set(entries
+            .filter(({ settingsChanged }) => settingsChanged?.length)
+            .map(({ settingsChanged }) => settingsLine(settingsChanged, entries.some(({ previousRun }) => previousRun !== undefined)))),
         '',
         combined === undefined
             ? passed
@@ -21096,10 +21281,11 @@ function renderMultiBody(entries, flavor, target, combined) {
             ]),
         '',
         usageLine(entries[entries.length - 1]),
+        ...unusedPatternLines(first.report.unusedIgnorePatterns?.filter((pattern) => entries.every(({ report }) => report.unusedIgnorePatterns?.includes(pattern)))),
     ];
     for (const entry of entries) {
-        const parts = renderParts(entry, target, perPageLimit);
-        lines.push('', `### ${entry.summary.passed ? '✅' : '❌'} ${inlineCode(pageLabel(entry.report))}`, '', parts.decision, '', ...parts.prioritized, ...(parts.prioritized.length === 0 ? [] : ['']), ...collapsible(flavor, parts.detailsSummary, [...parts.headline, '', ...parts.details], 4));
+        const parts = renderParts(entry, target, perPageLimit, false);
+        lines.push('', `### ${entry.summary.passed ? '✅' : '❌'} ${inlineCode(pageLabel(entry.report))}`, '', parts.decision, '', ...parts.prioritized, ...(parts.prioritized.length === 0 ? [] : ['']), ...collapsible(flavor, parts.detailsSummary, [...parts.headline, '', ...parts.details], 4), ...ignoredLines(entry, flavor, target));
     }
     return lines.join('\n');
 }
@@ -21108,17 +21294,56 @@ function renderMultiPrComment(entries, options = {}) {
     const marker = flavor === 'bitbucket'
         ? QUALITYGATE_BITBUCKET_COMMENT_MARKER
         : QUALITYGATE_COMMENT_MARKER;
-    return `${renderMultiBody(entries, flavor, 'comment', options.combined)}\n${marker}`;
+    const comment = `${renderMultiBody(entries, flavor, 'comment', options.combined, options.durationMs)}\n${marker}`;
+    return flavor === 'bitbucket'
+        ? limitBitbucketComment(comment, entries, options, options.combined)
+        : comment;
 }
 function renderMultiJobSummary(entries, options = {}) {
-    return renderMultiBody(entries, 'github', 'summary', options.combined);
+    return renderMultiBody(entries, 'github', 'summary', options.combined, options.durationMs);
+}
+function limitBitbucketComment(comment, entries, options, combined) {
+    if (new TextEncoder().encode(comment).length <= BITBUCKET_COMMENT_LIMIT_BYTES)
+        return comment;
+    const passed = combined?.passed ?? entries.every(({ summary }) => summary.passed);
+    const runUrl = options.runUrl ? scrubUrl(options.runUrl) : undefined;
+    const runLink = runUrl &&
+        /^https:\/\/(?:bitbucket\.org|app\.qualitygate\.dev)\//.test(runUrl) &&
+        runUrl.length < 1000
+        ? ` [Open the run](<${runUrl}>).`
+        : '';
+    const artifact = entries.find(({ reportFile }) => reportFile)?.reportFile;
+    return [
+        passed ? '## ✅ QualityGate passed' : '## ❌ QualityGate needs attention',
+        '',
+        groupingLine(entries.flatMap(({ report }) => report.results)),
+        '',
+        '| Page | Result | Critical | Serious | Moderate | Minor | Ignored |',
+        '| --- | :---: | ---: | ---: | ---: | ---: | ---: |',
+        ...entries.map(({ report, summary }) => {
+            const label = inlineCode(pageLabel(report).slice(0, 160)).replace(/\|/g, '\\|');
+            const { critical, serious, moderate, minor } = summary.issueCounts;
+            return `| ${label} | ${summary.passed ? '✅' : '❌'} | ${critical} | ${serious} | ${moderate} | ${minor} | ${report.ignored?.length ?? 0} |`;
+        }),
+        '',
+        ...new Set(entries
+            .filter(({ settingsChanged }) => settingsChanged?.length)
+            .map(({ settingsChanged }) => settingsLine(settingsChanged, entries.some(({ previousRun }) => previousRun !== undefined)))),
+        '',
+        `The findings list exceeds the Bitbucket comment budget.${runLink} Open the job summary${artifact ? ` or download ${inlineCode(artifact)}` : ''} for the findings.`,
+        '',
+        QUALITYGATE_BITBUCKET_COMMENT_MARKER,
+    ].join('\n');
 }
 function renderPrComment(input, options = {}) {
     const flavor = options.flavor ?? 'github';
     const marker = flavor === 'bitbucket'
         ? QUALITYGATE_BITBUCKET_COMMENT_MARKER
         : QUALITYGATE_COMMENT_MARKER;
-    return `${renderBody(input, flavor, 'comment')}\n${marker}`;
+    const comment = `${renderBody(input, flavor, 'comment')}\n${marker}`;
+    return flavor === 'bitbucket'
+        ? limitBitbucketComment(comment, [input], options)
+        : comment;
 }
 function renderJobSummary(input) {
     return renderBody(input, 'github', 'summary');
@@ -21160,6 +21385,7 @@ function renderLogSummary(input) {
 //# sourceMappingURL=render.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/report-json.js
 
+
 const REPORT_FILE_NAME = 'qualitygate-report.json';
 /**
  * Every finding of every scanned page as JSON, for an artifact that keeps what
@@ -21194,6 +21420,27 @@ combined) {
                 : { failReason: summary.failReason }),
             issueCounts: summary.issueCounts,
             failOn,
+            ...(report.durationMs === undefined
+                ? {}
+                : { durationMs: report.durationMs }),
+            ...(report.checkDurationsMs === undefined
+                ? {}
+                : { checkDurationsMs: report.checkDurationsMs }),
+            ...(report.ignored === undefined
+                ? {}
+                : {
+                    ignored: report.ignored.map(({ checkId, issue, pattern }) => ({
+                        checkId,
+                        issue: scrubIssue(issue),
+                        pattern: scrubText(pattern),
+                    })),
+                }),
+            ...(report.unusedIgnorePatterns === undefined
+                ? {}
+                : {
+                    unusedIgnorePatterns: report.unusedIgnorePatterns.map(scrubText),
+                }),
+            findingGroups: groupFindings(report.results.map(scrubCheckResult)),
             results: report.results.map(scrubCheckResult),
         })),
     }, null, 2)}\n`;

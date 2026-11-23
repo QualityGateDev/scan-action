@@ -64,13 +64,20 @@ so the action can post its comment.
 | `comment`      | `true`                 | Create or update the QualityGate pull request comment.                                               |
 | `fail_on_new`  | `false`                | `true` counts the `fail_on` limits against new findings only, like `regression`.                     |
 | `baseline_branch` | default branch      | Branch regression mode compares with. Set it on that branch's push runs too.                         |
-| `ignore`       | none                   | Globs or `/regex/` per line that the `full-runtime` runtime errors check skips.                      |
+| `ignore`       | none                   | Runtime URL or message patterns, or `rule:<id>` and `rule:<id>@<url-glob>` for any check.               |
 | `budgets`      | none                   | Experimental lab budgets for `perf`, such as `lcp=2500,cls=0.1,tbt=200`.                             |
 | `perf_form_factor` | `mobile`           | `mobile`, `desktop` or `both` for `perf`.                                                            |
 
 The step's output `report_path` names a JSON file with the verdict and every
-finding. The comment lists up to 50 findings, the job summary up to 500, and
-the step's log all of them.
+finding with its full selector. Comments group repeated findings and show
+representative selectors.
+
+In Bitbucket, `QUALITYGATE_COUNT_MODE: groups` applies gate limits to distinct
+groups. It defaults to `occurrences`, preserving the existing gate counts.
+`QUALITYGATE_CONCURRENCY` defaults to 2 for multi-page scans.
+Runtime URL patterns match the original request, redirect hops and final URL.
+Globs match the whole URL or path and query, so `*/cdn-cgi/image/*` matches the
+directory anywhere in the path. See the [Bitbucket pipe guide](https://qualitygate.dev/docs/bitbucket-pipelines).
 
 ## Guides
 
