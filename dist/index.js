@@ -33718,7 +33718,7 @@
 
 /***/ }),
 
-/***/ 3528:
+/***/ 8526:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 /**
@@ -33736,13 +33736,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-__nccwpck_require__(7142);
-module.exports = __nccwpck_require__(9277).inprocess.playwright;
+__nccwpck_require__(2884);
+module.exports = __nccwpck_require__(7271).inprocess.playwright;
 
 
 /***/ }),
 
-/***/ 7142:
+/***/ 2884:
 /***/ ((__unused_webpack_module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -33838,7 +33838,7 @@ if (process.env.PW_INSTRUMENT_MODULES) {
 
 /***/ }),
 
-/***/ 9277:
+/***/ 7271:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -41160,10 +41160,10 @@ var init_comparators = __esm({
     init_imageUtils();
     import_pixelmatch = __toESM(require_pixelmatch());
     init_compare();
-    jpegjs = (__nccwpck_require__(9565).jpegjs);
-    colors = (__nccwpck_require__(9565).colors);
-    diff = (__nccwpck_require__(9565).diff);
-    ({ PNG } = __nccwpck_require__(9565));
+    jpegjs = (__nccwpck_require__(4795).jpegjs);
+    colors = (__nccwpck_require__(4795).colors);
+    diff = (__nccwpck_require__(4795).diff);
+    ({ PNG } = __nccwpck_require__(4795));
     JPEG_JS_MAX_BUFFER_SIZE_IN_MB = 5 * 1024;
   }
 });
@@ -41431,7 +41431,7 @@ var init_debugLogger = __esm({
   "packages/utils/debugLogger.ts"() {
     "use strict";
     import_fs = __toESM(__nccwpck_require__(9896));
-    debug = (__nccwpck_require__(9565).debug);
+    debug = (__nccwpck_require__(4795).debug);
     debugLoggerColorMap = {
       "api": 45,
       // cyan
@@ -42110,9 +42110,9 @@ var init_network = __esm({
     import_https2 = __toESM(__nccwpck_require__(5692));
     init_manualPromise();
     init_happyEyeballs();
-    ({ HttpsProxyAgent } = __nccwpck_require__(9565));
-    ({ SocksProxyAgent } = __nccwpck_require__(9565));
-    ({ getProxyForUrl } = __nccwpck_require__(9565));
+    ({ HttpsProxyAgent } = __nccwpck_require__(4795));
+    ({ SocksProxyAgent } = __nccwpck_require__(4795));
+    ({ getProxyForUrl } = __nccwpck_require__(4795));
     NET_DEFAULT_TIMEOUT = 3e4;
   }
 });
@@ -42171,8 +42171,8 @@ var init_httpServer = __esm({
     init_crypto();
     init_fileUtils();
     init_network();
-    mime = (__nccwpck_require__(9565).mime);
-    ({ wsServer } = __nccwpck_require__(9565));
+    mime = (__nccwpck_require__(4795).mime);
+    ({ wsServer } = __nccwpck_require__(4795));
     HttpServer = class {
       constructor(staticRoot) {
         this._urlPrefixPrecise = "";
@@ -42440,7 +42440,7 @@ var init_nodePlatform = __esm({
     init_debugLogger();
     init_zones();
     init_debug();
-    colors2 = (__nccwpck_require__(9565).colors);
+    colors2 = (__nccwpck_require__(4795).colors);
     pipelineAsync = util.promisify(import_stream.pipeline);
     NodeZone = class _NodeZone {
       constructor(zone) {
@@ -42784,7 +42784,7 @@ var init_serializedFS = __esm({
     "use strict";
     import_fs8 = __toESM(__nccwpck_require__(9896));
     init_manualPromise();
-    yazl = (__nccwpck_require__(9565).yazl);
+    yazl = (__nccwpck_require__(4795).yazl);
     APPEND_CHUNK_SIZE = 64 * 1024;
     SerializedFS = class {
       constructor() {
@@ -43420,7 +43420,7 @@ var init_stringWidth = __esm({
   "packages/utils/stringWidth.ts"() {
     "use strict";
     init_stringUtils();
-    getEastAsianWidth = (__nccwpck_require__(9565).getEastAsianWidth);
+    getEastAsianWidth = (__nccwpck_require__(4795).getEastAsianWidth);
   }
 });
 
@@ -43463,7 +43463,7 @@ var init_wsServer = __esm({
     init_httpServer();
     init_network();
     init_debugLogger();
-    ({ wsServer: wsServer2 } = __nccwpck_require__(9565));
+    ({ wsServer: wsServer2 } = __nccwpck_require__(4795));
     lastConnectionId = 0;
     kConnectionSymbol = Symbol("kConnection");
     perMessageDeflate = {
@@ -43598,7 +43598,7 @@ var yauzl, ZipFile;
 var init_zipFile = __esm({
   "packages/utils/zipFile.ts"() {
     "use strict";
-    yauzl = (__nccwpck_require__(9565).yauzl);
+    yauzl = (__nccwpck_require__(4795).yauzl);
     ZipFile = class {
       constructor(fileName) {
         this._entries = /* @__PURE__ */ new Map();
@@ -43665,9 +43665,9 @@ var init_extractZip = __esm({
     import_path6 = __toESM(__nccwpck_require__(6928));
     import_stream2 = __toESM(__nccwpck_require__(2203));
     import_util = __nccwpck_require__(9023);
-    debugPkg = (__nccwpck_require__(9565).debug);
-    getStream = (__nccwpck_require__(9565).getStream);
-    yauzl2 = (__nccwpck_require__(9565).yauzl);
+    debugPkg = (__nccwpck_require__(4795).debug);
+    getStream = (__nccwpck_require__(4795).getStream);
+    yauzl2 = (__nccwpck_require__(4795).yauzl);
     debug2 = debugPkg("extract-zip");
     openZip = (0, import_util.promisify)(yauzl2.open);
     pipeline2 = (0, import_util.promisify)(import_stream2.default.pipeline);
@@ -44024,9 +44024,9 @@ var init_lockfile = __esm({
   "packages/utils/third_party/lockfile.ts"() {
     "use strict";
     import_path7 = __toESM(__nccwpck_require__(6928));
-    gracefulFs = (__nccwpck_require__(9565).gracefulFs);
-    retry = (__nccwpck_require__(9565).retry);
-    onExit = (__nccwpck_require__(9565).onExit);
+    gracefulFs = (__nccwpck_require__(4795).gracefulFs);
+    retry = (__nccwpck_require__(4795).retry);
+    onExit = (__nccwpck_require__(4795).onExit);
     locks = {};
     cacheSymbol = Symbol();
     cleanupInitialized = false;
@@ -47339,7 +47339,7 @@ var mime2, MultipartFormData, alphaNumericEncodingMap;
 var init_formData = __esm({
   "packages/playwright-core/src/server/formData.ts"() {
     "use strict";
-    mime2 = (__nccwpck_require__(9565).mime);
+    mime2 = (__nccwpck_require__(4795).mime);
     MultipartFormData = class {
       constructor() {
         this._chunks = [];
@@ -47586,7 +47586,7 @@ var init_socksClientCertificatesInterceptor = __esm({
     init_stackTrace();
     init_network();
     init_browserContext();
-    ({ getProxyForUrl: getProxyForUrl2 } = __nccwpck_require__(9565));
+    ({ getProxyForUrl: getProxyForUrl2 } = __nccwpck_require__(4795));
     dummyServerTlsOptions = void 0;
     SocksProxyConnection = class {
       constructor(socksProxy, uid, host, port) {
@@ -48372,7 +48372,7 @@ var init_snapshotter = __esm({
     init_snapshotterInjected();
     init_browserContext();
     init_progress();
-    mime3 = (__nccwpck_require__(9565).mime);
+    mime3 = (__nccwpck_require__(4795).mime);
     Snapshotter = class {
       constructor(context2, delegate) {
         this._eventListeners = [];
@@ -52930,7 +52930,7 @@ var init_fileUploadUtils = __esm({
     import_fs13 = __toESM(__nccwpck_require__(9896));
     import_path12 = __toESM(__nccwpck_require__(6928));
     init_assert();
-    mime4 = (__nccwpck_require__(9565).mime);
+    mime4 = (__nccwpck_require__(4795).mime);
     fileUploadSizeLimit = 50 * 1024 * 1024;
   }
 });
@@ -53021,7 +53021,7 @@ var init_dom = __esm({
     init_javascript();
     init_fileUploadUtils();
     init_injectedScriptSource();
-    mime5 = (__nccwpck_require__(9565).mime);
+    mime5 = (__nccwpck_require__(4795).mime);
     NonRecoverableDOMError = class extends Error {
     };
     FrameExecutionContext = class extends ExecutionContext {
@@ -56047,7 +56047,7 @@ var init_frames = __esm({
     init_progress();
     init_types();
     init_protocolError();
-    yaml = (__nccwpck_require__(9565).yaml);
+    yaml = (__nccwpck_require__(4795).yaml);
     NavigationAbortedError = class extends Error {
       constructor(documentId, message) {
         super(message);
@@ -57667,7 +57667,7 @@ var init_harTracer = __esm({
     init_helper();
     init_network2();
     init_progress();
-    mime6 = (__nccwpck_require__(9565).mime);
+    mime6 = (__nccwpck_require__(4795).mime);
     FALLBACK_HTTP_VERSION = "HTTP/1.1";
     HarTracer = class {
       constructor(context2, page, delegate, options) {
@@ -59551,12 +59551,15 @@ ${text2}`;
             if (!(socket instanceof import_tls3.TLSSocket))
               return;
             const peerCertificate = socket.getPeerCertificate();
+            // A resumed TLS session may not expose the peer certificate.
+            if (!peerCertificate?.valid_from || !peerCertificate.valid_to)
+              return;
             securityDetails = {
               protocol: socket.getProtocol() ?? void 0,
-              subjectName: peerCertificate.subject.CN,
+              subjectName: peerCertificate.subject?.CN,
               validFrom: new Date(peerCertificate.valid_from).getTime() / 1e3,
               validTo: new Date(peerCertificate.valid_to).getTime() / 1e3,
-              issuer: peerCertificate.issuer.CN
+              issuer: peerCertificate.issuer?.CN
             };
           };
           request2.on("socket", (socket) => {
@@ -61725,8 +61728,8 @@ var init_browserFetcher = __esm({
     init_userAgent();
     init_package();
     init_registry();
-    ProgressBar = (__nccwpck_require__(9565).progress);
-    colors3 = (__nccwpck_require__(9565).colors);
+    ProgressBar = (__nccwpck_require__(4795).progress);
+    colors3 = (__nccwpck_require__(4795).colors);
   }
 });
 
@@ -63150,7 +63153,7 @@ ${e.stack}`);
           let linkTarget = "";
           try {
             linkTarget = (await import_fs19.default.promises.readFile(linkPath)).toString();
-            const browsersJSON = __nccwpck_require__(8454)(import_path19.default.join(linkTarget, "browsers.json"));
+            const browsersJSON = __nccwpck_require__(3440)(import_path19.default.join(linkTarget, "browsers.json"));
             const descriptors = readDescriptors(browsersJSON);
             for (const browserName of allDownloadableDirectoriesThatEverExisted) {
               const descriptor = descriptors.find((d) => d.name === browserName);
@@ -70301,7 +70304,7 @@ var init_videoRecorder = __esm({
     init_time();
     init_artifact();
     init_registry();
-    jpegjs2 = (__nccwpck_require__(9565).jpegjs);
+    jpegjs2 = (__nccwpck_require__(4795).jpegjs);
     fps = 25;
     VideoRecorder = class {
       constructor(screencast) {
@@ -72061,7 +72064,7 @@ var init_android = __esm({
     init_debugLogger();
     init_fileUtils();
     init_processLauncher();
-    import_utilsBundle = __nccwpck_require__(9565);
+    import_utilsBundle = __nccwpck_require__(4795);
     init_browserContext();
     init_chromiumSwitches();
     init_crBrowser();
@@ -72069,7 +72072,7 @@ var init_android = __esm({
     init_instrumentation();
     init_progress();
     init_registry();
-    debug3 = (__nccwpck_require__(9565).debug);
+    debug3 = (__nccwpck_require__(4795).debug);
     ARTIFACTS_FOLDER = import_path23.default.join(import_os9.default.tmpdir(), "playwright-artifacts-");
     Android = class extends SdkObject {
       constructor(parent, backend) {
@@ -72531,7 +72534,7 @@ var init_backendAdb = __esm({
     import_events8 = __nccwpck_require__(4434);
     import_net4 = __toESM(__nccwpck_require__(9278));
     init_assert();
-    debug4 = (__nccwpck_require__(9565).debug);
+    debug4 = (__nccwpck_require__(4795).debug);
     AdbBackend = class {
       async devices(options = {}) {
         const result2 = await runCommand("host:devices", options.host, options.port);
@@ -72717,7 +72720,7 @@ var init_transport = __esm({
     "use strict";
     init_happyEyeballs();
     init_task();
-    ws = (__nccwpck_require__(9565).ws);
+    ws = (__nccwpck_require__(4795).ws);
     perMessageDeflate2 = {
       clientNoContextTakeover: true,
       zlibDeflateOptions: {
@@ -77013,7 +77016,7 @@ var init_debugController = __esm({
     init_language();
     init_recorderUtils();
     init_javascript2();
-    yaml2 = (__nccwpck_require__(9565).yaml);
+    yaml2 = (__nccwpck_require__(4795).yaml);
     DebugController = class _DebugController extends SdkObject {
       constructor(playwright2) {
         super({ attribution: { isInternalPlaywright: true }, instrumentation: createInstrumentation() }, void 0, "DebugController");
@@ -79760,8 +79763,8 @@ var init_wkPage = __esm({
     init_registry();
     init_videoRecorder();
     init_progress();
-    ({ PNG: PNG2 } = __nccwpck_require__(9565));
-    jpegjs3 = (__nccwpck_require__(9565).jpegjs);
+    ({ PNG: PNG2 } = __nccwpck_require__(4795));
+    jpegjs3 = (__nccwpck_require__(4795).jpegjs);
     UTILITY_WORLD_NAME3 = "__playwright_utility_world__";
     enableFrameSessions = !process.env.WK_DISABLE_FRAME_SESSIONS && parseInt(registry.findExecutable("webkit").revision, 10) >= 2245 && parseInt(registry.findExecutable("webkit").revision, 10) <= 2255;
     WKPage = class _WKPage {
@@ -82385,8 +82388,8 @@ var init_wvPage = __esm({
     init_wvWorkers();
     init_wvInterceptableRequest();
     init_wvProvisionalPage();
-    ({ PNG: PNG3 } = __nccwpck_require__(9565));
-    jpegjs4 = (__nccwpck_require__(9565).jpegjs);
+    ({ PNG: PNG3 } = __nccwpck_require__(4795));
+    jpegjs4 = (__nccwpck_require__(4795).jpegjs);
     WVPage = class {
       constructor(browserContext, outerSession, dialogEndpoint) {
         this._provisionalPage = null;
@@ -83248,7 +83251,7 @@ var init_wvBrowser = __esm({
     init_dialogBridge();
     init_wvConnection();
     init_wvPage();
-    ws2 = (__nccwpck_require__(9565).ws);
+    ws2 = (__nccwpck_require__(4795).ws);
     DeferredWebSocketTransport = class {
       constructor(url2, headers) {
         this._closed = false;
@@ -83634,7 +83637,7 @@ var init_recorderApp = __esm({
     init_language();
     init_recorder();
     init_browserContext();
-    mime7 = (__nccwpck_require__(9565).mime);
+    mime7 = (__nccwpck_require__(4795).mime);
     RecorderApp = class _RecorderApp {
       constructor(recorder, params2, page, wsEndpointForTest) {
         this._throttledOutputFile = null;
@@ -84964,7 +84967,7 @@ var init_serverRegistry = __esm({
     import_path33 = __toESM(__nccwpck_require__(6928));
     import_os17 = __toESM(__nccwpck_require__(857));
     init_package();
-    chokidar = (__nccwpck_require__(9565).chokidar);
+    chokidar = (__nccwpck_require__(4795).chokidar);
     packageVersion = packageJSON.version;
     ServerRegistry = class extends import_events14.EventEmitter {
       constructor() {
@@ -88437,8 +88440,8 @@ var init_localUtils = __esm({
     init_zipFile();
     init_fileUtils();
     init_harBackend();
-    yauzl3 = (__nccwpck_require__(9565).yauzl);
-    yazl2 = (__nccwpck_require__(9565).yazl);
+    yauzl3 = (__nccwpck_require__(4795).yauzl);
+    yazl2 = (__nccwpck_require__(4795).yazl);
   }
 });
 
@@ -88996,7 +88999,7 @@ var init_traceViewer = __esm({
     init_playwright();
     init_progress();
     init_progress();
-    open2 = (__nccwpck_require__(9565).open);
+    open2 = (__nccwpck_require__(4795).open);
     tracesDirMarker = "traces.dir";
     StdinServer = class {
       constructor() {
@@ -96232,7 +96235,7 @@ var init_logFile = __esm({
     "use strict";
     import_fs41 = __toESM(__nccwpck_require__(9896));
     import_path38 = __toESM(__nccwpck_require__(6928));
-    debug5 = (__nccwpck_require__(9565).debug);
+    debug5 = (__nccwpck_require__(4795).debug);
     LogFile = class {
       constructor(context2, startTime, filePrefix, title) {
         this._stopped = false;
@@ -96322,7 +96325,7 @@ var init_dialogs = __esm({
   "packages/playwright-core/src/tools/backend/dialogs.ts"() {
     "use strict";
     init_tool();
-    z = (__nccwpck_require__(9565).z);
+    z = (__nccwpck_require__(4795).z);
     handleDialog = defineTabTool({
       capability: "core",
       schema: {
@@ -96362,7 +96365,7 @@ var init_snapshot = __esm({
     "use strict";
     init_stringUtils();
     init_tool();
-    z2 = (__nccwpck_require__(9565).z);
+    z2 = (__nccwpck_require__(4795).z);
     elementTargetDescription = "Exact target element reference from the page snapshot, or a unique element selector";
     optionalElementSchema = z2.object({
       element: z2.string().optional().describe("Human-readable element description used to obtain permission to interact with the element"),
@@ -96556,7 +96559,7 @@ var init_files = __esm({
     init_stringUtils();
     init_tool();
     init_snapshot();
-    z3 = (__nccwpck_require__(9565).z);
+    z3 = (__nccwpck_require__(4795).z);
     uploadFile = defineTabTool({
       capability: "core",
       schema: {
@@ -96711,7 +96714,7 @@ var init_tab = __esm({
     init_logFile();
     init_dialogs();
     init_files();
-    debug6 = (__nccwpck_require__(9565).debug);
+    debug6 = (__nccwpck_require__(4795).debug);
     TabEvents = {
       modalState: "modalState"
     };
@@ -96784,7 +96787,7 @@ var init_tab = __esm({
           this._requests.push(request2);
         for (const initPage of this.context.config.browser?.initPage || []) {
           try {
-            const { default: func } = __nccwpck_require__(8454)(initPage);
+            const { default: func } = __nccwpck_require__(3440)(initPage);
             await func({ page: this.page });
           } catch (e) {
             const reason = e instanceof Error ? e.message : String(e);
@@ -97113,7 +97116,7 @@ var init_context = __esm({
     init_fileUtils();
     init_inprocess();
     init_tab();
-    debug7 = (__nccwpck_require__(9565).debug);
+    debug7 = (__nccwpck_require__(4795).debug);
     testDebug = debug7("pw:mcp:test");
     Context = class {
       constructor(browserContext, options) {
@@ -97356,9 +97359,9 @@ var init_screenshot = __esm({
     init_imageUtils();
     init_tool();
     init_snapshot();
-    jpegjs5 = (__nccwpck_require__(9565).jpegjs);
-    ({ PNG: PNG4 } = __nccwpck_require__(9565));
-    z4 = (__nccwpck_require__(9565).z);
+    jpegjs5 = (__nccwpck_require__(4795).jpegjs);
+    ({ PNG: PNG4 } = __nccwpck_require__(4795));
+    z4 = (__nccwpck_require__(4795).z);
     screenshotSchema = optionalElementSchema.extend({
       type: z4.enum(["png", "jpeg"]).default("png").describe("Image format for the screenshot. Default is png."),
       filename: z4.string().optional().describe("File name to save the screenshot to. Defaults to `page-{timestamp}.{png|jpeg}` if not specified. Prefer relative file names to stay within the output directory."),
@@ -97509,7 +97512,7 @@ var init_response = __esm({
     init_tab();
     init_screenshot();
     init_context();
-    debug8 = (__nccwpck_require__(9565).debug);
+    debug8 = (__nccwpck_require__(4795).debug);
     requestDebug = debug8("pw:mcp:request");
     Response4 = class {
       constructor(context2, toolName, toolArgs, options) {
@@ -97758,7 +97761,7 @@ var init_sessionLog = __esm({
     import_path41 = __toESM(__nccwpck_require__(6928));
     init_context();
     init_response();
-    debug9 = (__nccwpck_require__(9565).debug);
+    debug9 = (__nccwpck_require__(4795).debug);
     SessionLog = class _SessionLog {
       constructor(sessionFolder, cwd) {
         this._sessionFileQueue = Promise.resolve();
@@ -97808,8 +97811,8 @@ var init_browserBackend = __esm({
     init_context();
     init_response();
     init_sessionLog();
-    z5 = (__nccwpck_require__(9565).z);
-    debug10 = (__nccwpck_require__(9565).debug);
+    z5 = (__nccwpck_require__(4795).z);
+    debug10 = (__nccwpck_require__(4795).debug);
     BrowserBackend = class {
       constructor(config, browserContext, tools) {
         this._disconnected = false;
@@ -97885,7 +97888,7 @@ var init_common = __esm({
     "use strict";
     init_tool();
     init_response();
-    z6 = (__nccwpck_require__(9565).z);
+    z6 = (__nccwpck_require__(4795).z);
     close = defineTool({
       capability: "core",
       schema: {
@@ -97932,7 +97935,7 @@ var init_config = __esm({
   "packages/playwright-core/src/tools/backend/config.ts"() {
     "use strict";
     init_tool();
-    z7 = (__nccwpck_require__(9565).z);
+    z7 = (__nccwpck_require__(4795).z);
     configShow = defineTool({
       capability: "config",
       schema: {
@@ -97958,7 +97961,7 @@ var init_console2 = __esm({
   "packages/playwright-core/src/tools/backend/console.ts"() {
     "use strict";
     init_tool();
-    z8 = (__nccwpck_require__(9565).z);
+    z8 = (__nccwpck_require__(4795).z);
     console2 = defineTabTool({
       capability: "core",
       schema: {
@@ -98009,7 +98012,7 @@ var init_cookies = __esm({
   "packages/playwright-core/src/tools/backend/cookies.ts"() {
     "use strict";
     init_tool();
-    z9 = (__nccwpck_require__(9565).z);
+    z9 = (__nccwpck_require__(4795).z);
     cookieList = defineTool({
       capability: "storage",
       schema: {
@@ -98149,7 +98152,7 @@ var init_devtools = __esm({
     init_package();
     init_tool();
     init_snapshot();
-    z10 = (__nccwpck_require__(9565).z);
+    z10 = (__nccwpck_require__(4795).z);
     resume = defineTool({
       capability: "devtools",
       schema: {
@@ -98307,7 +98310,7 @@ var init_evaluate = __esm({
     init_stringUtils();
     init_tool();
     init_snapshot();
-    z11 = (__nccwpck_require__(9565).z);
+    z11 = (__nccwpck_require__(4795).z);
     evaluateSchema = optionalElementSchema.extend({
       function: z11.string().describe("() => { /* code */ } or (element) => { /* code */ } when element is provided"),
       filename: z11.string().optional().describe("Filename to save the result to. If not provided, result is returned as text.")
@@ -98369,7 +98372,7 @@ var init_form = __esm({
     init_stringUtils();
     init_tool();
     init_snapshot();
-    z12 = (__nccwpck_require__(9565).z);
+    z12 = (__nccwpck_require__(4795).z);
     fillForm = defineTabTool({
       capability: "core",
       schema: {
@@ -98416,7 +98419,7 @@ var init_keyboard = __esm({
     "use strict";
     init_tool();
     init_snapshot();
-    z13 = (__nccwpck_require__(9565).z);
+    z13 = (__nccwpck_require__(4795).z);
     press = defineTabTool({
       capability: "core-input",
       schema: {
@@ -98556,7 +98559,7 @@ var init_mouse = __esm({
     "use strict";
     init_stringUtils();
     init_tool();
-    z14 = (__nccwpck_require__(9565).z);
+    z14 = (__nccwpck_require__(4795).z);
     mouseMove = defineTabTool({
       capability: "vision",
       schema: {
@@ -98708,7 +98711,7 @@ var init_navigate = __esm({
   "packages/playwright-core/src/tools/backend/navigate.ts"() {
     "use strict";
     init_tool();
-    z15 = (__nccwpck_require__(9565).z);
+    z15 = (__nccwpck_require__(4795).z);
     navigate = defineTool({
       capability: "core-navigation",
       schema: {
@@ -98918,7 +98921,7 @@ var init_network4 = __esm({
     init_mimeType();
     init_rtti();
     init_tool();
-    z16 = (__nccwpck_require__(9565).z);
+    z16 = (__nccwpck_require__(4795).z);
     requests = defineTabTool({
       capability: "core",
       schema: {
@@ -99035,7 +99038,7 @@ var init_pdf = __esm({
     "use strict";
     init_stringUtils();
     init_tool();
-    z17 = (__nccwpck_require__(9565).z);
+    z17 = (__nccwpck_require__(4795).z);
     pdfSchema = z17.object({
       filename: z17.string().optional().describe("File name to save the pdf to. Defaults to `page-{timestamp}.pdf` if not specified. Prefer relative file names to stay within the output directory.")
     });
@@ -99067,7 +99070,7 @@ var init_route = __esm({
   "packages/playwright-core/src/tools/backend/route.ts"() {
     "use strict";
     init_tool();
-    z18 = (__nccwpck_require__(9565).z);
+    z18 = (__nccwpck_require__(4795).z);
     route = defineTool({
       capability: "network",
       schema: {
@@ -99195,7 +99198,7 @@ var init_runCode = __esm({
     import_vm = __toESM(__nccwpck_require__(9154));
     init_manualPromise();
     init_tool();
-    z19 = (__nccwpck_require__(9565).z);
+    z19 = (__nccwpck_require__(4795).z);
     codeSchema = z19.object({
       code: z19.string().optional().describe(`A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: \`async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }\``),
       filename: z19.string().optional().describe("Load code from the specified file. If both code and filename are provided, code will be ignored.")
@@ -99253,7 +99256,7 @@ var init_storage = __esm({
   "packages/playwright-core/src/tools/backend/storage.ts"() {
     "use strict";
     init_tool();
-    z20 = (__nccwpck_require__(9565).z);
+    z20 = (__nccwpck_require__(4795).z);
     storageState = defineTool({
       capability: "storage",
       schema: {
@@ -99307,7 +99310,7 @@ var init_tabs = __esm({
     "use strict";
     init_tool();
     init_response();
-    z21 = (__nccwpck_require__(9565).z);
+    z21 = (__nccwpck_require__(4795).z);
     browserTabs = defineTool({
       capability: "core-tabs",
       schema: {
@@ -99364,7 +99367,7 @@ var init_tracing3 = __esm({
   "packages/playwright-core/src/tools/backend/tracing.ts"() {
     "use strict";
     init_tool();
-    z22 = (__nccwpck_require__(9565).z);
+    z22 = (__nccwpck_require__(4795).z);
     tracingStart = defineTool({
       capability: "devtools",
       schema: {
@@ -99428,7 +99431,7 @@ var init_verify = __esm({
     "use strict";
     init_stringUtils();
     init_tool();
-    z23 = (__nccwpck_require__(9565).z);
+    z23 = (__nccwpck_require__(4795).z);
     verifyElement = defineTabTool({
       capability: "testing",
       schema: {
@@ -99561,7 +99564,7 @@ var init_video2 = __esm({
   "packages/playwright-core/src/tools/backend/video.ts"() {
     "use strict";
     init_tool();
-    z24 = (__nccwpck_require__(9565).z);
+    z24 = (__nccwpck_require__(4795).z);
     videoStart = defineTool({
       capability: "devtools",
       schema: {
@@ -99686,7 +99689,7 @@ var init_wait = __esm({
   "packages/playwright-core/src/tools/backend/wait.ts"() {
     "use strict";
     init_tool();
-    z25 = (__nccwpck_require__(9565).z);
+    z25 = (__nccwpck_require__(4795).z);
     wait = defineTool({
       capability: "core",
       schema: {
@@ -99734,7 +99737,7 @@ var init_webstorage = __esm({
   "packages/playwright-core/src/tools/backend/webstorage.ts"() {
     "use strict";
     init_tool();
-    z26 = (__nccwpck_require__(9565).z);
+    z26 = (__nccwpck_require__(4795).z);
     localStorageList = defineTabTool({
       capability: "storage",
       schema: {
@@ -99960,7 +99963,7 @@ var init_tools = __esm({
     init_video2();
     init_wait();
     init_webstorage();
-    z27 = (__nccwpck_require__(9565).z);
+    z27 = (__nccwpck_require__(4795).z);
     browserTools = [
       ...common_default,
       ...config_default,
@@ -100037,7 +100040,7 @@ var z28, kEmptyOptions, kEmptyArgs;
 var init_command = __esm({
   "packages/playwright-core/src/tools/cli-daemon/command.ts"() {
     "use strict";
-    z28 = (__nccwpck_require__(9565).z);
+    z28 = (__nccwpck_require__(4795).z);
     kEmptyOptions = z28.object({});
     kEmptyArgs = z28.object({});
   }
@@ -100157,7 +100160,7 @@ var init_commands = __esm({
   "packages/playwright-core/src/tools/cli-daemon/commands.ts"() {
     "use strict";
     init_command();
-    z29 = (__nccwpck_require__(9565).z);
+    z29 = (__nccwpck_require__(4795).z);
     elementTargetDescription2 = "Exact target element reference from the page snapshot, or a unique element selector";
     numberArg = z29.preprocess((val, ctx) => {
       const number = Number(val);
@@ -101613,7 +101616,7 @@ var init_traceCli = __esm({
 
 // packages/playwright-core/src/cli/driver.ts
 function printApiJson() {
-  console.log(JSON.stringify(__nccwpck_require__(8454)(import_path43.default.join(packageRoot, "api.json"))));
+  console.log(JSON.stringify(__nccwpck_require__(3440)(import_path43.default.join(packageRoot, "api.json"))));
 }
 function runDriver() {
   const dispatcherConnection = new DispatcherConnection();
@@ -101697,7 +101700,7 @@ function printGroupedByPlaywrightVersion(browsers) {
   for (const browser of browsers) {
     if (dirToVersion.has(browser.referenceDir))
       continue;
-    const packageJSON2 = __nccwpck_require__(8454)(import_path44.default.join(browser.referenceDir, "package.json"));
+    const packageJSON2 = __nccwpck_require__(3440)(import_path44.default.join(browser.referenceDir, "package.json"));
     const version3 = packageJSON2.version;
     dirToVersion.set(browser.referenceDir, version3);
   }
@@ -102081,9 +102084,9 @@ var init_browserActions = __esm({
     init_processLauncher();
     init_manualPromise();
     init_inprocess();
-    debug11 = (__nccwpck_require__(9565).debug);
-    dotenv = (__nccwpck_require__(9565).dotenv);
-    ({ program } = __nccwpck_require__(9565));
+    debug11 = (__nccwpck_require__(4795).debug);
+    dotenv = (__nccwpck_require__(4795).dotenv);
+    ({ program } = __nccwpck_require__(4795));
   }
 });
 
@@ -103006,7 +103009,7 @@ to start the browser session.`);
 // packages/playwright-core/src/tools/cli-client/program.ts
 async function program2(options) {
   const clientInfo = createClientInfo();
-  const help = __nccwpck_require__(8454)(libPath("tools", "cli-client", "help.json"));
+  const help = __nccwpck_require__(3440)(libPath("tools", "cli-client", "help.json"));
   const argv = process.argv.slice(2);
   const boolean = [...help.booleanOptions, ...booleanOptions];
   const args = minimist(argv, { boolean, string: ["_"] });
@@ -103239,7 +103242,7 @@ async function runInitWorkspace(args, output) {
 async function installBrowser2() {
   const argv = process.argv.map((arg) => arg === "install-browser" ? "install" : arg);
   const { libCli } = (init_coreBundle(), __toCommonJS(coreBundle_exports));
-  const { program: program4 } = __nccwpck_require__(9565);
+  const { program: program4 } = __nccwpck_require__(4795);
   if (!program4.version())
     libCli.decorateProgram(program4);
   program4.parse(argv);
@@ -103574,7 +103577,7 @@ var init_program2 = __esm({
     init_traceViewer();
     init_browserActions();
     init_program();
-    ({ program: program3 } = __nccwpck_require__(9565));
+    ({ program: program3 } = __nccwpck_require__(4795));
   }
 });
 
@@ -103587,7 +103590,7 @@ function printPlaywrightTestError(command) {
   const packages = [];
   for (const pkg of ["playwright", "playwright-chromium", "playwright-firefox", "playwright-webkit"]) {
     try {
-      /*require.resolve*/(__nccwpck_require__(8454).resolve(pkg));
+      /*require.resolve*/(__nccwpck_require__(3440).resolve(pkg));
       packages.push(pkg);
     } catch (e) {
     }
@@ -103697,7 +103700,7 @@ var debug12, errorDebug, testDebug2;
 var init_log = __esm({
   "packages/playwright-core/src/tools/mcp/log.ts"() {
     "use strict";
-    debug12 = (__nccwpck_require__(9565).debug);
+    debug12 = (__nccwpck_require__(4795).debug);
     errorDebug = debug12("pw:mcp:error");
     testDebug2 = debug12("pw:mcp:test");
   }
@@ -103847,9 +103850,9 @@ var init_http = __esm({
     init_httpServer();
     init_network();
     init_server2();
-    debug13 = (__nccwpck_require__(9565).debug);
-    ({ SSEServerTransport } = __nccwpck_require__(9565));
-    ({ StreamableHTTPServerTransport } = __nccwpck_require__(9565));
+    debug13 = (__nccwpck_require__(4795).debug);
+    ({ SSEServerTransport } = __nccwpck_require__(4795));
+    ({ StreamableHTTPServerTransport } = __nccwpck_require__(4795));
     testDebug3 = debug13("pw:mcp:test");
   }
 });
@@ -103873,7 +103876,7 @@ var zod;
 var init_tool2 = __esm({
   "packages/playwright-core/src/tools/utils/mcp/tool.ts"() {
     "use strict";
-    zod = (__nccwpck_require__(9565).z);
+    zod = (__nccwpck_require__(4795).z);
   }
 });
 
@@ -104000,10 +104003,10 @@ var init_server2 = __esm({
     import_url2 = __nccwpck_require__(7016);
     init_http();
     init_tool2();
-    ({ CallToolRequestSchema, ListToolsRequestSchema } = __nccwpck_require__(9565));
-    debug14 = (__nccwpck_require__(9565).debug);
-    ({ Server } = __nccwpck_require__(9565));
-    ({ StdioServerTransport } = __nccwpck_require__(9565));
+    ({ CallToolRequestSchema, ListToolsRequestSchema } = __nccwpck_require__(4795));
+    debug14 = (__nccwpck_require__(4795).debug);
+    ({ Server } = __nccwpck_require__(4795));
+    ({ StdioServerTransport } = __nccwpck_require__(4795));
     serverDebug = debug14("pw:mcp:server");
     serverDebugResponse = debug14("pw:mcp:server:response");
     BackendManager = class {
@@ -104127,7 +104130,7 @@ var init_configIni = __esm({
   "packages/playwright-core/src/tools/mcp/configIni.ts"() {
     "use strict";
     import_fs54 = __toESM(__nccwpck_require__(9896));
-    ini = (__nccwpck_require__(9565).ini);
+    ini = (__nccwpck_require__(4795).ini);
     longhandTypes = {
       // browser direct
       "browser.browserName": "string",
@@ -104624,7 +104627,7 @@ var init_config2 = __esm({
     init_fileUtils();
     init_inprocess();
     init_configIni();
-    dotenv2 = (__nccwpck_require__(9565).dotenv);
+    dotenv2 = (__nccwpck_require__(4795).dotenv);
     defaultConfig = {
       browser: {
         launchOptions: {},
@@ -104983,9 +104986,9 @@ var init_cdpRelay = __esm({
     init_cdpRelayV1();
     init_cdpRelayV2();
     init_protocol();
-    debug15 = (__nccwpck_require__(9565).debug);
-    ws3 = (__nccwpck_require__(9565).ws);
-    ({ wsServer: wsServer3 } = __nccwpck_require__(9565));
+    debug15 = (__nccwpck_require__(4795).debug);
+    ws3 = (__nccwpck_require__(4795).ws);
+    ({ wsServer: wsServer3 } = __nccwpck_require__(4795));
     debugLogger2 = debug15("pw:mcp:relay");
     CDPRelayServer = class {
       constructor(server, browserChannel, executablePath) {
@@ -105282,14 +105285,14 @@ var init_extensionContextFactory = __esm({
     init_inprocess();
     init_extension();
     init_cdpRelay();
-    debug16 = (__nccwpck_require__(9565).debug);
+    debug16 = (__nccwpck_require__(4795).debug);
     debugLogger3 = debug16("pw:mcp:relay");
   }
 });
 
 // packages/playwright-core/src/tools/utils/connect.ts
 async function connectToBrowserAcrossVersions(descriptor) {
-  const pw = __nccwpck_require__(8454)(descriptor.playwrightLib);
+  const pw = __nccwpck_require__(3440)(descriptor.playwrightLib);
   const browserType = pw[descriptor.browser.browserName];
   return await browserType.connect(descriptor.endpoint ?? descriptor.pipeName);
 }
@@ -105610,7 +105613,7 @@ var init_program3 = __esm({
     init_tools();
     init_log();
     init_package();
-    ({ ProgramOption } = __nccwpck_require__(9565));
+    ({ ProgramOption } = __nccwpck_require__(4795));
     version2 = packageJSON.version;
   }
 });
@@ -105728,7 +105731,7 @@ var init_helpGenerator = __esm({
   "packages/playwright-core/src/tools/cli-daemon/helpGenerator.ts"() {
     "use strict";
     init_commands();
-    z30 = (__nccwpck_require__(9565).z);
+    z30 = (__nccwpck_require__(4795).z);
     categories = [
       { name: "core", title: "Core" },
       { name: "navigation", title: "Navigation" },
@@ -107205,7 +107208,7 @@ init_coreBundle();
 
 /***/ }),
 
-/***/ 9565:
+/***/ 4795:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -195118,7 +195121,7 @@ module.exports = eval("require")("utf-8-validate");
 
 /***/ }),
 
-/***/ 8454:
+/***/ 3440:
 /***/ ((module) => {
 
 function webpackEmptyContext(req) {
@@ -195128,7 +195131,7 @@ function webpackEmptyContext(req) {
 }
 webpackEmptyContext.keys = () => ([]);
 webpackEmptyContext.resolve = webpackEmptyContext;
-webpackEmptyContext.id = 8454;
+webpackEmptyContext.id = 3440;
 module.exports = webpackEmptyContext;
 
 /***/ }),
@@ -195554,7 +195557,7 @@ var __webpack_exports__ = {};
 var external_assert_ = __nccwpck_require__(2613);
 // EXTERNAL MODULE: ../../node_modules/.pnpm/axe-core@4.12.1/node_modules/axe-core/axe.js
 var axe = __nccwpck_require__(9065);
-;// CONCATENATED MODULE: ../../node_modules/.pnpm/@axe-core+playwright@4.12.1_playwright-core@1.61.1/node_modules/@axe-core/playwright/dist/index.mjs
+;// CONCATENATED MODULE: ../../node_modules/.pnpm/@axe-core+playwright@4.12.1_playwright-core@1.61.1_patch_hash=9a078087de24ceffabf2fb53d_cc4453fff407cbf8a2bb5136dcace34c/node_modules/@axe-core/playwright/dist/index.mjs
 // src/index.ts
 
 
@@ -211361,9 +211364,9 @@ function createScanReport(url, bundleId, results, collected, page, details) {
 ;// CONCATENATED MODULE: ../core/dist/render.js
 
 //# sourceMappingURL=render.js.map
-// EXTERNAL MODULE: ../../node_modules/.pnpm/playwright-core@1.61.1/node_modules/playwright-core/index.js
-var playwright_core = __nccwpck_require__(3528);
-;// CONCATENATED MODULE: ../../node_modules/.pnpm/playwright-core@1.61.1/node_modules/playwright-core/index.mjs
+// EXTERNAL MODULE: ../../node_modules/.pnpm/playwright-core@1.61.1_patch_hash=9a078087de24ceffabf2fb53dafa2c2f9d6997777514cda10cf807437daebad9/node_modules/playwright-core/index.js
+var playwright_core = __nccwpck_require__(8526);
+;// CONCATENATED MODULE: ../../node_modules/.pnpm/playwright-core@1.61.1_patch_hash=9a078087de24ceffabf2fb53dafa2c2f9d6997777514cda10cf807437daebad9/node_modules/playwright-core/index.mjs
 /**
  * Copyright (c) Microsoft Corporation.
  *
