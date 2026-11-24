@@ -17607,6 +17607,7 @@ const contract_FailOnSchema = object({
     // the field on the wire, where a backend deployed before regression mode
     // rejects it as an unknown key. Absent means absolute.
     mode: FailOnModeSchema.optional(),
+    requireCompleteCoverage: literal(true).optional(),
 })
     .strict();
 /**
@@ -18527,7 +18528,13 @@ function parseFailOn(value, source) {
     const regression = entries[0]?.toLowerCase() === REGRESSION_KEYWORD;
     const thresholdEntries = regression ? entries.slice(1) : entries;
     const thresholds = new Map();
+    let requireCompleteCoverage = false;
     for (const entry of thresholdEntries) {
+        if (entry.toLowerCase() === 'complete-coverage' &&
+            !requireCompleteCoverage) {
+            requireCompleteCoverage = true;
+            continue;
+        }
         const [rawName, rawValue, ...extra] = entry.split('=');
         const name = rawName?.trim().toLowerCase();
         const threshold = Number(rawValue?.trim());
@@ -18536,7 +18543,7 @@ function parseFailOn(value, source) {
             !Number.isInteger(threshold) ||
             threshold < 0 ||
             thresholds.has(name)) {
-            throw new Error(`${source} must use 'critical=N,serious=N' or 'regression', with non-negative integers.`);
+            throw new Error(`${source} must use 'critical=N,serious=N' or 'regression', with non-negative integers and optional ',complete-coverage'.`);
         }
         thresholds.set(name, threshold);
     }
@@ -18548,11 +18555,12 @@ function parseFailOn(value, source) {
     // one and silently accepts a default for the other hides which gate is in
     // force. Checked here so a missing one reports the spelling, not a schema error.
     if (maxCritical === undefined || maxSerious === undefined) {
-        throw new Error(`${source} must use 'critical=N,serious=N' or 'regression', with non-negative integers.`);
+        throw new Error(`${source} must use 'critical=N,serious=N' or 'regression', with non-negative integers and optional ',complete-coverage'.`);
     }
     return FailOnSchema.parse({
         maxCritical,
         maxSerious,
+        ...(requireCompleteCoverage ? { requireCompleteCoverage: true } : {}),
         // Optional on purpose: absent means absolute, and absent is what stays off
         // the wire for a backend deployed before regression mode existed.
         ...(regression ? { mode: 'regression' } : {}),
@@ -18624,6 +18632,7 @@ function finding_groups_countFindingGroups(results) {
 //# sourceMappingURL=finding-groups.js.map
 ;// CONCATENATED MODULE: ../shared/dist/gate.js
 
+
 const DEFAULT_FAIL_ON = {
     maxCritical: 0,
     maxSerious: 0,
@@ -18652,7 +18661,7 @@ function exceeded(severity, count, maximum, regression) {
  * than to everything on the page (QG-P2-04). Absolute counts are still reported;
  * they simply stop deciding the verdict.
  *
- * A regression run with no comparison passes. `diffScan` reports no new findings
+ * With no comparison, severity thresholds do not fail a regression run. `diffScan` reports no new findings
  * when it had no usable baseline, and that is the safe direction: nothing can be
  * shown to have got worse without evidence of what came before, so the build is
  * not failed over a backlog this change cannot be shown to have created.
@@ -18681,6 +18690,15 @@ function evaluateGate(results, failOn = DEFAULT_FAIL_ON, diff) {
     }
     if (gated.serious > failOn.maxSerious) {
         failures.push(exceeded('serious', gated.serious, failOn.maxSerious, regression));
+    }
+    if (failOn.requireCompleteCoverage) {
+        const coverage = scanCoverage(results);
+        if (!coverage) {
+            failures.push('Complete coverage requires a secrets-exposure result');
+        }
+        else if (coverage.status === 'partial') {
+            failures.push('Incomplete scan coverage: some assets were skipped');
+        }
     }
     return failures.length === 0
         ? { issueCounts, passed: true }
@@ -18840,6 +18858,11 @@ const ProjectSummarySchema = object({
     repo: RepositoryPathSchema,
     repositoryId: ProviderIdSchema.nullable(),
     repositoryUuid: schemas_string().uuid().nullable().default(null),
+})
+    .strict();
+const ProjectDetailResponseSchema = object({
+    bundles: array(BundleIdSchema),
+    project: ProjectSummarySchema,
 })
     .strict();
 const ProjectListSchema = object({
@@ -19917,6 +19940,7 @@ const CreateSeoSavedFilterRequestSchema = object({
 
 
 
+
 //# sourceMappingURL=index.js.map
 ;// CONCATENATED MODULE: ../reporting/dist/html-report.js
 
@@ -19926,6 +19950,8 @@ const HTML_REPORT_DEFAULT_THEME = {
     accentColor: '#2457ff',
 };
 const PDF_REPORT_FINDING_LIMIT = 20;
+const REPORT_FAVICON_URL = 'https://qualitygate.dev/favicon.ico';
+const REPORT_PREVIEW_IMAGE_URL = 'https://qualitygate.dev/qualitygate-og-report.png';
 const CHECK_LABELS = {
     a11y: 'Accessibility',
     seo: 'SEO',
@@ -20094,6 +20120,30 @@ function brandHtml(theme, whiteLabel) {
         : `<img class="brand-logo" src="${escapeAttribute(theme.logoUrl)}" alt="${escapeAttribute(theme.brandName)} logo">`;
     return `${mark}<span>${escapeText(theme.brandName)}</span>`;
 }
+function reportPreviewMetadata(theme, title, platform) {
+    const name = escapeAttribute(theme.brandName);
+    const description = 'Review the release decision, checks, and findings in this shared report.';
+    const favicon = platform ? REPORT_FAVICON_URL : theme.logoUrl;
+    const image = platform ? REPORT_PREVIEW_IMAGE_URL : theme.logoUrl;
+    // The share URL is a credential. Keep it and the report contents out of the
+    // metadata that preview clients may cache or display separately.
+    const tags = [
+        `<meta name="description" content="${description}">`,
+        '<meta property="og:type" content="website">',
+        `<meta property="og:site_name" content="${name}">`,
+        `<meta property="og:title" content="${escapeAttribute(title)}">`,
+        `<meta property="og:description" content="${description}">`,
+    ];
+    if (favicon)
+        tags.push(`<link rel="icon" href="${escapeAttribute(favicon)}">`);
+    if (image) {
+        tags.push(`<meta property="og:image" content="${escapeAttribute(image)}">`, `<meta property="og:image:alt" content="${platform ? 'QualityGate shared quality report' : `${name} logo`}">`, `<meta name="twitter:card" content="${platform ? 'summary_large_image' : 'summary'}">`, `<meta name="twitter:title" content="${escapeAttribute(title)}">`, `<meta name="twitter:description" content="${description}">`, `<meta name="twitter:image" content="${escapeAttribute(image)}">`);
+    }
+    if (platform) {
+        tags.push('<meta property="og:image:width" content="1200">', '<meta property="og:image:height" content="630">');
+    }
+    return tags.join('\n');
+}
 function renderReportUnavailable() {
     return `<!doctype html>
 <html lang="en">
@@ -20102,6 +20152,7 @@ function renderReportUnavailable() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>Report not found · QualityGate</title>
+<link rel="icon" href="${REPORT_FAVICON_URL}">
 <style>
 * { box-sizing: border-box; }
 html { color-scheme: light; background: #f5f7fb; color: #12243a; font: 1rem/1.6 Inter, ui-sans-serif, system-ui, sans-serif; }
@@ -20128,6 +20179,13 @@ ${CLIENT_REPORT_MASTHEAD_STYLES}
 }
 function renderHtmlReport(input, theme = HTML_REPORT_DEFAULT_THEME, options = {}) {
     const checkedTheme = parseTheme(theme);
+    const documentTitle = options.sharePreview
+        ? `Shared quality report · ${checkedTheme.brandName}`
+        : `${checkedTheme.brandName} report — ${input.project.repo}`;
+    const previewMetadata = options.sharePreview
+        ? '\n' +
+            reportPreviewMetadata(checkedTheme, documentTitle, options.sharePreview === 'platform')
+        : '';
     const sharedView = options.whiteLabel === true && options.profile !== 'pdf-summary';
     const runUrl = html_report_httpUrl(input.run.url, 'run.url');
     const decision = input.summary.passed ? 'Gate passed' : 'Gate failed';
@@ -20163,14 +20221,18 @@ function renderHtmlReport(input, theme = HTML_REPORT_DEFAULT_THEME, options = {}
         : `<p class="download"><a href="${escapeAttribute(options.pdfHref)}" download>Download PDF</a></p>\n`;
     const scoreDelta = `<p class="delta">${delta}</p>`;
     const scorePanel = `<div${sharedView ? ' class="score-panel"' : ''}><span class="score-label">Quality score</span><p class="score">${input.score}<small>/100</small></p>${sharedView ? scoreDelta : ''}</div>`;
-    const gateDecision = `<div class="decision"><h2 id="decision-heading">${decision}</h2>${sharedView ? '' : scoreDelta}${input.summary.failReason === undefined ? '' : `<p>${escapeText(input.summary.failReason)}</p>`}</div>`;
+    const coverage = scanCoverage(input.results);
+    const coverageHtml = coverage?.status === 'partial'
+        ? `<p><strong>Partial coverage</strong></p><ul>${coverage.warnings.map((warning) => `<li>${escapeText(warning)}</li>`).join('')}</ul>`
+        : '';
+    const gateDecision = `<div class="decision"><h2 id="decision-heading">${decision}</h2>${sharedView ? '' : scoreDelta}${input.summary.failReason === undefined ? '' : `<p>${escapeText(input.summary.failReason)}</p>`}${coverageHtml}</div>`;
     return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>${escapeText(checkedTheme.brandName)} report — ${escapeText(input.project.repo)}</title>
+<title>${escapeText(documentTitle)}</title>${previewMetadata}
 <style>
 :root { --accent: ${checkedTheme.accentColor}; --ink: #10213f; --muted: #5b6880; --paper: #f3f6fb; --surface: #ffffff; --rule: #d8e0ec; --critical: #b42318; --serious: #c2410c; --moderate: #a16207; --minor: #2563eb; color-scheme: light; }
 * { box-sizing: border-box; }
@@ -21090,6 +21152,16 @@ function collapsible(flavor, summary, body, headingLevel = 3) {
             '</details>',
         ];
 }
+function coverageLines(results) {
+    const coverage = scanCoverage(results);
+    return coverage?.status === 'partial'
+        ? [
+            '**Partial coverage**',
+            ...coverage.warnings.map((warning) => `- ${formatMessage(warning)}`),
+            '',
+        ]
+        : [];
+}
 function renderParts(input, target, findingLimitDefault, showStepDetails = true) {
     const limit = input.topIssueLimit ?? DEFAULT_TOP_ISSUE_LIMIT;
     assertNonnegativeInteger(limit, 'topIssueLimit');
@@ -21210,6 +21282,7 @@ function renderBody(input, flavor, target) {
         '',
         parts.decision,
         '',
+        ...coverageLines(input.report.results),
         ...parts.headline,
         '',
         usageLine(input),
@@ -21285,7 +21358,7 @@ function renderMultiBody(entries, flavor, target, combined, durationMs) {
     ];
     for (const entry of entries) {
         const parts = renderParts(entry, target, perPageLimit, false);
-        lines.push('', `### ${entry.summary.passed ? '✅' : '❌'} ${inlineCode(pageLabel(entry.report))}`, '', parts.decision, '', ...parts.prioritized, ...(parts.prioritized.length === 0 ? [] : ['']), ...collapsible(flavor, parts.detailsSummary, [...parts.headline, '', ...parts.details], 4), ...ignoredLines(entry, flavor, target));
+        lines.push('', `### ${entry.summary.passed ? '✅' : '❌'} ${inlineCode(pageLabel(entry.report))}`, '', parts.decision, '', ...coverageLines(entry.report.results), ...parts.prioritized, ...(parts.prioritized.length === 0 ? [] : ['']), ...collapsible(flavor, parts.detailsSummary, [...parts.headline, '', ...parts.details], 4), ...ignoredLines(entry, flavor, target));
     }
     return lines.join('\n');
 }
@@ -21317,6 +21390,7 @@ function limitBitbucketComment(comment, entries, options, combined) {
         passed ? '## ✅ QualityGate passed' : '## ❌ QualityGate needs attention',
         '',
         groupingLine(entries.flatMap(({ report }) => report.results)),
+        ...coverageLines(entries.flatMap(({ report }) => report.results)),
         '',
         '| Page | Result | Critical | Serious | Moderate | Minor | Ignored |',
         '| --- | :---: | ---: | ---: | ---: | ---: | ---: |',
@@ -21365,6 +21439,10 @@ function renderLogSummary(input) {
             : `Scanned ${scrubUrl(report.url)} with the ${safeRuleId(report.bundleId)} bundle.`,
         `Found ${counts.critical} critical (max ${failOn.maxCritical}), ${counts.serious} serious (max ${failOn.maxSerious}), ${counts.moderate} moderate, ${counts.minor} minor.`,
     ];
+    const coverage = scanCoverage(report.results);
+    if (coverage?.status === 'partial') {
+        lines.push('Partial coverage', ...coverage.warnings.map(scrubText));
+    }
     if (input.aiReview)
         lines.push(`AI review ${input.aiReview.status === 'pending' ? 'queued' : 'available'}. ${input.aiReview.url}`);
     for (const result of report.results) {
@@ -21397,52 +21475,56 @@ combined) {
     return `${JSON.stringify({
         passed: combined?.passed ?? entries.every(({ summary }) => summary.passed),
         ...(combined === undefined ? {} : { combined }),
-        pages: entries.map(({ report, summary, failOn }) => ({
-            url: scrubUrl(report.url),
-            ...(report.page === undefined
-                ? {}
-                : {
-                    finalUrl: scrubUrl(report.page.finalUrl),
-                    status: report.page.status,
-                    redirects: report.page.redirects.map((hop) => ({
-                        url: scrubUrl(hop.url),
-                        status: hop.status,
-                    })),
-                    securityHeaders: report.page.securityHeaders ?? [],
-                }),
-            ...(report.details?.seo === undefined
-                ? {}
-                : { seo: report.details.seo }),
-            bundle: report.bundleId,
-            passed: summary.passed,
-            ...(summary.failReason === undefined
-                ? {}
-                : { failReason: summary.failReason }),
-            issueCounts: summary.issueCounts,
-            failOn,
-            ...(report.durationMs === undefined
-                ? {}
-                : { durationMs: report.durationMs }),
-            ...(report.checkDurationsMs === undefined
-                ? {}
-                : { checkDurationsMs: report.checkDurationsMs }),
-            ...(report.ignored === undefined
-                ? {}
-                : {
-                    ignored: report.ignored.map(({ checkId, issue, pattern }) => ({
-                        checkId,
-                        issue: scrubIssue(issue),
-                        pattern: scrubText(pattern),
-                    })),
-                }),
-            ...(report.unusedIgnorePatterns === undefined
-                ? {}
-                : {
-                    unusedIgnorePatterns: report.unusedIgnorePatterns.map(scrubText),
-                }),
-            findingGroups: groupFindings(report.results.map(scrubCheckResult)),
-            results: report.results.map(scrubCheckResult),
-        })),
+        pages: entries.map(({ report, summary, failOn }) => {
+            const results = report.results.map(scrubCheckResult);
+            return {
+                url: scrubUrl(report.url),
+                ...(report.page === undefined
+                    ? {}
+                    : {
+                        finalUrl: scrubUrl(report.page.finalUrl),
+                        status: report.page.status,
+                        redirects: report.page.redirects.map((hop) => ({
+                            url: scrubUrl(hop.url),
+                            status: hop.status,
+                        })),
+                        securityHeaders: report.page.securityHeaders ?? [],
+                    }),
+                ...(report.details?.seo === undefined
+                    ? {}
+                    : { seo: report.details.seo }),
+                bundle: report.bundleId,
+                passed: summary.passed,
+                ...(summary.failReason === undefined
+                    ? {}
+                    : { failReason: summary.failReason }),
+                issueCounts: summary.issueCounts,
+                failOn,
+                ...(report.durationMs === undefined
+                    ? {}
+                    : { durationMs: report.durationMs }),
+                ...(report.checkDurationsMs === undefined
+                    ? {}
+                    : { checkDurationsMs: report.checkDurationsMs }),
+                ...(report.ignored === undefined
+                    ? {}
+                    : {
+                        ignored: report.ignored.map(({ checkId, issue, pattern }) => ({
+                            checkId,
+                            issue: scrubIssue(issue),
+                            pattern: scrubText(pattern),
+                        })),
+                    }),
+                ...(report.unusedIgnorePatterns === undefined
+                    ? {}
+                    : {
+                        unusedIgnorePatterns: report.unusedIgnorePatterns.map(scrubText),
+                    }),
+                coverage: scanCoverage(results),
+                findingGroups: groupFindings(results),
+                results,
+            };
+        }),
     }, null, 2)}\n`;
 }
 //# sourceMappingURL=report-json.js.map

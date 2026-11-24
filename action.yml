@@ -7,8 +7,8 @@ inputs:
     description: Project-scoped QualityGate API key. Optional for a repository connected through the QualityGate GitHub App when the workflow grants id-token write.
     required: false
   url:
-    description: Preview URL to scan
-    required: true
+    description: Preview URL to scan. Omit for a standalone repository security pilot scan.
+    required: false
   bundle:
     description: Check bundle (a11y, ada, seo, security, links, full, full-runtime, perf, geo, seo-deep, or secrets-exposure). perf runs Lighthouse and installs it on first use; geo and seo-deep are analysed by the QualityGate service on paid plans.
     required: false
@@ -17,7 +17,8 @@ inputs:
     description: >-
       Gate thresholds. 'critical=N,serious=N' gates on every finding on the
       page; 'regression' gates only on findings this pull request introduced,
-      and 'regression,critical=N' allows N of them.
+      and 'regression,critical=N' allows N of them. Append complete-coverage
+      with the secrets-exposure bundle to fail if any in-scope asset is skipped.
     required: false
     default: critical=0,serious=0
   fail_on_new:
@@ -67,6 +68,12 @@ inputs:
     description: Opt in to the pilot passive repository dependency scan. Requires a project API key, id-token write permission, and an approved sca_passive profile.
     required: false
     default: 'false'
+  repository_security_sbom:
+    description: Scope the dependency inventory to this workspace-relative CycloneDX JSON SBOM with resolved Maven package coordinates. Requires repository_security.
+    required: false
+  repository_security_composer_lock:
+    description: Scope the dependency inventory to this workspace-relative composer.lock and its sibling composer.json. Requires repository_security.
+    required: false
 
 outputs:
   report_path:
